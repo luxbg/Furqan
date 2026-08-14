@@ -1,0 +1,32 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Quran (macOS)",
+            "type": "shell",
+            "command": "xcodebuild",
+            "args": [
+                "-project", "Quran.xcodeproj",
+                "-scheme", "Quran",
+                "-configuration", "Debug",
+                "-destination", "platform=macOS",
+                "-derivedDataPath", "build",
+                "build"
+            ],
+            "options": {
+                "env": { "DEVELOPER_DIR": "/Applications/Xcode.app/Contents/Developer" }
+            },
+            "group": { "kind": "build", "isDefault": true },
+            "problemMatcher": "$xcode",
+            "presentation": { "reveal": "silent", "panel": "shared", "clear": true }
+        },
+        {
+            "label": "Run Quran (macOS)",
+            "type": "shell",
+            "command": "open",
+            "args": ["${workspaceFolder}/build/Build/Products/Debug/Quran.app"],
+            "dependsOn": "Build Quran (macOS)",
+            "problemMatcher": []
+        }
+    ]
+}

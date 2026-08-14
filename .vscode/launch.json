@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Quran (macOS)",
+            "type": "lldb-dap",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/Build/Products/Debug/Quran.app/Contents/MacOS/Quran",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Build Quran (macOS)"
+        }
+    ]
+}
