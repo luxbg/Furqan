@@ -1,0 +1,7 @@
+OneLogger: Setting error_handling_strategy to DISABLE_QUIETLY_AND_REPORT_METRIC_ERROR for rank (rank=0) with OneLogger disabled. To override: explicitly set error_handling_strategy parameter.
+No exporters were provided. This means that no telemetry data will be collected.
+[NeMo I 2026-08-15 13:45:34 common:1210] Downloading mohammed/fastconformer-quran-ar from HuggingFace Hub to path: /Users/luxbug/.cache/torch/NeMo/NeMo_3.0.0/hf_hub_cache/mohammed/fastconformer-quran-ar/cd29efa3ec521d609603f46f57fee016
+[NeMo W 2026-08-15 13:45:34 nemo_logging:364] /Users/luxbug/Work/tarteel/.venv/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py:205: UserWarning: The `local_dir_use_symlinks` argument is deprecated and ignored in `snapshot_download`. Downloading to a local directory does not use symlinks anymore.
+      warnings.warn(
+    
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Fetching 11 files:   9%|▉         | 1/11 [00:00<00:04,  2.03it/s]
