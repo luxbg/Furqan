@@ -1,0 +1,456 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0B6E0AEA9106B98E93895247 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 044592F2C4724E64AEDCEFD7 /* WebKit.framework */; };
+		A1B2C3D4E5F607182934B560 /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5F /* sherpa-onnx */; };
+		A1B2C3D4E5F60718293A4B5C /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */; };
+		5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3FF94B0BF01D49A69DBE31AC /* XCTest.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		044592F2C4724E64AEDCEFD7 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
+		A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		B4010BF5733C9D64AE98655C /* Quran.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quran.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3FF94B0BF01D49A69DBE31AC /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
+		76C16DD7491C4999A36D8125 /* QuranTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = QuranTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		4D0BCDAEAB56F2F74E1E2F5C /* MushafPages */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MushafPages;
+			sourceTree = "<group>";
+		};
+		82EBEF26A9890E59319B97B3 /* Quran */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Quran;
+			sourceTree = "<group>";
+		};
+		915067AFE85E43A8BF59938C /* QuranTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = QuranTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		91C5D58BA2273F7AD616C962 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0B6E0AEA9106B98E93895247 /* WebKit.framework in Frameworks */,
+				A1B2C3D4E5F60718293A4B5C /* libsqlite3.tbd in Frameworks */,
+				A1B2C3D4E5F607182934B560 /* sherpa-onnx in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		32D6305E0C8049C3B12CA0FD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		18DE5053302EF73700250CED /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				044592F2C4724E64AEDCEFD7 /* WebKit.framework */,
+				A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */,
+			);
+			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		AAEBFFF585ADAB356CA12463 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				B4010BF5733C9D64AE98655C /* Quran.app */,
+				76C16DD7491C4999A36D8125 /* QuranTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		AB58976CF2FE30D913BD3B40 = {
+			isa = PBXGroup;
+			children = (
+				82EBEF26A9890E59319B97B3 /* Quran */,
+				4D0BCDAEAB56F2F74E1E2F5C /* MushafPages */,
+				915067AFE85E43A8BF59938C /* QuranTests */,
+				AAEBFFF585ADAB356CA12463 /* Products */,
+				18DE5053302EF73700250CED /* Recovered References */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		93BF9874448D1DD7A3030F1D /* Quran */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 14604537A6E89B69F5A167A3 /* Build configuration list for PBXNativeTarget "Quran" */;
+			buildPhases = (
+				5CC47932920B2B785FACF676 /* Sources */,
+				91C5D58BA2273F7AD616C962 /* Frameworks */,
+				DB2BAFE1170DF20D9614984B /* Resources */,
+				A1B2C3D4E5F607182934B561 /* ShellScript */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				4D0BCDAEAB56F2F74E1E2F5C /* MushafPages */,
+				82EBEF26A9890E59319B97B3 /* Quran */,
+			);
+			name = Quran;
+			packageProductDependencies = (
+				A1B2C3D4E5F60718293A4B5F /* sherpa-onnx */,
+			);
+			productName = Quran;
+			productReference = B4010BF5733C9D64AE98655C /* Quran.app */;
+			productType = "com.apple.product-type.application";
+		};
+		2FB120BF23ED4774AD0C21E1 /* QuranTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B09C1ACF31FB4E4CAAEF207B /* Build configuration list for PBXNativeTarget "QuranTests" */;
+			buildPhases = (
+				8192CE7DFA30468F85925979 /* Sources */,
+				32D6305E0C8049C3B12CA0FD /* Frameworks */,
+				8703A51E7E254629AB7E4652 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				81D3D0A6C50041DF9985087A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				915067AFE85E43A8BF59938C /* QuranTests */,
+			);
+			name = QuranTests;
+			productName = QuranTests;
+			productReference = 76C16DD7491C4999A36D8125 /* QuranTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		28699FADDFCAB9A94B659998 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2650;
+				LastUpgradeCheck = 2650;
+				TargetAttributes = {
+					93BF9874448D1DD7A3030F1D = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					2FB120BF23ED4774AD0C21E1 = {
+						CreatedOnToolsVersion = 26.5;
+						TestTargetID = 93BF9874448D1DD7A3030F1D;
+					};
+				};
+			};
+			buildConfigurationList = 43E892C2CA226F6D7FC75ECF /* Build configuration list for PBXProject "Quran" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AB58976CF2FE30D913BD3B40;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A1B2C3D4E5F60718293A4B5E /* XCRemoteSwiftPackageReference "sherpa-onnx" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = AAEBFFF585ADAB356CA12463 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				93BF9874448D1DD7A3030F1D /* Quran */,
+				2FB120BF23ED4774AD0C21E1 /* QuranTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXContainerItemProxy section */
+		0BBB19CE49FD4B18AD6BBAA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 28699FADDFCAB9A94B659998 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 93BF9874448D1DD7A3030F1D;
+			remoteInfo = Quran;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXResourcesBuildPhase section */
+		DB2BAFE1170DF20D9614984B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8703A51E7E254629AB7E4652 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A1B2C3D4E5F607182934B561 /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -e\n# sherpa-onnx's SPM binary xcframeworks (onnxruntime, SherpaOnnxC) ship\n# with a malformed versioned-bundle layout: Versions/Current and\n# top-level items (Headers, Resources, the binary itself) land as real,\n# duplicated files/dirs instead of symlinks into Versions/A, because the\n# upstream zip didn't preserve symlinks. Left as-is, every copy Xcode\n# makes carries the same brokenness into Contents/Frameworks, and the\n# final app-level codesign fails with \"code object is not signed at\n# all\" / \"bundle format is ambiguous\".\n#\n# Fixed at the ROOT: repair the SPM-resolved source artifacts themselves\n# (under DerivedData's SourcePackages/artifacts), not just the copies in\n# Contents/Frameworks. Once the source is correctly symlinked, every\n# copy Xcode makes from it afterward - regardless of exactly when or how\n# many times, including test-hosting's extra embed step for QuranTests\n# - is correct by construction. Repairing only the destination after the\n# fact (an earlier version of this script) raced against Xcode's own\n# embed step and could get silently undone by a later re-embed.\nrepair_framework() {\n  fw=\"$1\"\n  [ -d \"$fw/Versions/A\" ] || return 0\n  if [ ! -L \"$fw/Versions/Current\" ]; then\n    rm -rf \"$fw/Versions/Current\"\n    ln -s A \"$fw/Versions/Current\"\n  fi\n  for item in \"$fw\"/Versions/A/*; do\n    name=$(basename \"$item\")\n    if [ -e \"$fw/$name\" ] && [ ! -L \"$fw/$name\" ]; then\n      rm -rf \"$fw/$name\"\n      ln -s \"Versions/Current/$name\" \"$fw/$name\"\n    fi\n  done\n  codesign --force --sign - \"$fw\" 2>/dev/null || true\n}\n\nDERIVED_DATA_ROOT=\"$(cd \"$BUILD_ROOT/../..\" && pwd)\"\nif [ -d \"$DERIVED_DATA_ROOT/SourcePackages/artifacts\" ]; then\n  find \"$DERIVED_DATA_ROOT/SourcePackages/artifacts\" -iname \"*.framework\" -type d 2>/dev/null | while IFS= read -r fw; do\n    repair_framework \"$fw\"\n  done\nfi\n\nFRAMEWORKS=\"${CODESIGNING_FOLDER_PATH}/Contents/Frameworks\"\nif [ -d \"$FRAMEWORKS\" ]; then\n  for fw in \"$FRAMEWORKS\"/*.framework; do\n    [ -d \"$fw\" ] && repair_framework \"$fw\"\n  done\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5CC47932920B2B785FACF676 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		8192CE7DFA30468F85925979 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		81D3D0A6C50041DF9985087A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 93BF9874448D1DD7A3030F1D /* Quran */;
+			targetProxy = 0BBB19CE49FD4B18AD6BBAA8 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		4A36FF488AE9E42266BA5CB9 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Quran/Quran.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used to transcribe your recitation and identify the ayah you're reading.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.Quran;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		4B3068EBC4B7A3B36CB69770 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		6BF3252E5FD07D60EDCF6C10 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Quran/Quran.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Used to transcribe your recitation and identify the ayah you're reading.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.Quran;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		FEB1B5E7AA71F43C7CE497DD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		0322F6BB6E404FEA903262CB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
+			};
+			name = Debug;
+		};
+		C25EA41080BC418BABF4465D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		14604537A6E89B69F5A167A3 /* Build configuration list for PBXNativeTarget "Quran" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4A36FF488AE9E42266BA5CB9 /* Debug */,
+				6BF3252E5FD07D60EDCF6C10 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		43E892C2CA226F6D7FC75ECF /* Build configuration list for PBXProject "Quran" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4B3068EBC4B7A3B36CB69770 /* Debug */,
+				FEB1B5E7AA71F43C7CE497DD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		B09C1ACF31FB4E4CAAEF207B /* Build configuration list for PBXNativeTarget "QuranTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0322F6BB6E404FEA903262CB /* Debug */,
+				C25EA41080BC418BABF4465D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A1B2C3D4E5F60718293A4B5E /* XCRemoteSwiftPackageReference "sherpa-onnx" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/k2-fsa/sherpa-onnx";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.13.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A1B2C3D4E5F60718293A4B5F /* sherpa-onnx */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4E5F60718293A4B5E /* XCRemoteSwiftPackageReference "sherpa-onnx" */;
+			productName = "sherpa-onnx";
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 28699FADDFCAB9A94B659998 /* Project object */;
+}
