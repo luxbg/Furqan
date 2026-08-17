@@ -51,6 +51,20 @@ nonisolated final class QuranDatabase {
     /// mapping an ayah to a position in `flatWords`.
     private let ayahFlatStart: [Int]
 
+    /// Per-ayah SVG word-slot mapping, for the live word-highlighting UI -
+    /// parallel to `ayahs`/`flatWords` (`wordMaps[ayahIndex].slots[i]`
+    /// corresponds to `flatWords[flatStart(ofAyahIndex: ayahIndex) + i]`).
+    let wordMaps: [AyahWordMap]
+    /// Ayah indices where `reconcileWordSlots` couldn't find a clean
+    /// correspondence and `proportionalWordSlotMapping` was used instead -
+    /// exposed for a regression test asserting this stays a small, bounded
+    /// set rather than silently growing as the data changes.
+    let wordSlotFallbackAyahIndices: Set<Int>
+    /// Ayah indices grouped by `startPage`, in ascending order within each
+    /// page - lets `RecitationProgressTracker` reveal "every ayah on this
+    /// page up to the current one" without scanning all of `ayahs`.
+    let ayahIndicesByPage: [Int: [Int]]
+
     init() {
         var db: OpaquePointer?
         guard let url = Bundle.main.url(forResource: "quran", withExtension: "sqlite"),
@@ -125,6 +139,136 @@ nonisolated final class QuranDatabase {
         }
         flatWords = flat
         ayahFlatStart = flatStart
+
+        // Real spoken words only (word_type='word') become slots. A
+        // waw-al-atf row (is_waw_alatf=1) is its own word_type='word' row in
+        // this table, but glues onto the very next word with no space in
+        // both text_uthmani and Tanzil's plain script (e.g. "وَإِيَّاكَ" is
+        // one Tanzil word, two SVG glyphs) - held as `pendingWawSvgIds`
+        // until the following real word arrives, then both become one raw
+        // slot. Waqf/juz-star/sajda-mehrab marker rows are bucketed onto the
+        // nearest preceding real-word slot (or the first slot, if a marker
+        // precedes any real word in the ayah - e.g. a leading juz-star).
+        //
+        // Each raw slot is still SVG-indexed at this point, not yet aligned
+        // to Tanzil's tokenization (see `reconcileWordSlots` below, which
+        // handles the small remaining set of words the mushaf rasm fuses
+        // that Tanzil's plain script spells separately, e.g. a vocative "يا"
+        // prefix).
+        struct RawSlot { let ids: [String]; let markers: [String]; let imlaei: String }
+        var rawSlotsByAyahID: [Int: [RawSlot]] = [:]
+        let wordsSQL = """
+            SELECT surah, ayah_number, word_type, is_waw_alatf, svg_element_id, text_imlaei
+            FROM words ORDER BY surah, ayah_number, word_index
+            """
+        var wordsStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(db, wordsSQL, -1, &wordsStatement, nil) == SQLITE_OK else {
+            fatalError("could not prepare words query")
+        }
+        defer { sqlite3_finalize(wordsStatement) }
+
+        var currentAyahID: Int?
+        var currentSlots: [RawSlot] = []
+        var pendingMarkerIDs: [String] = []
+        var pendingWaw: (ids: [String], imlaei: String)?
+
+        func flushCurrentAyah() {
+            guard let ayahID = currentAyahID else { return }
+            if let waw = pendingWaw {
+                // A dangling waw-alatf with no following word (shouldn't
+                // occur in practice) still gets its own slot rather than
+                // being silently dropped.
+                currentSlots.append(RawSlot(ids: waw.ids, markers: [], imlaei: waw.imlaei))
+                pendingWaw = nil
+            }
+            // Any markers still pending (an ayah with no real words at all,
+            // which doesn't occur in practice, or trailing markers after
+            // the last real word) attach to the final slot if one exists.
+            if !pendingMarkerIDs.isEmpty, !currentSlots.isEmpty {
+                let last = currentSlots.count - 1
+                currentSlots[last] = RawSlot(
+                    ids: currentSlots[last].ids,
+                    markers: currentSlots[last].markers + pendingMarkerIDs,
+                    imlaei: currentSlots[last].imlaei
+                )
+                pendingMarkerIDs = []
+            }
+            rawSlotsByAyahID[ayahID] = currentSlots
+            currentSlots = []
+        }
+
+        while sqlite3_step(wordsStatement) == SQLITE_ROW {
+            let surah = Int(sqlite3_column_int(wordsStatement, 0))
+            let ayahNumber = Int(sqlite3_column_int(wordsStatement, 1))
+            let wordType = String(cString: sqlite3_column_text(wordsStatement, 2))
+            let isWawAlatf = sqlite3_column_int(wordsStatement, 3) != 0
+            let svgElementId = String(cString: sqlite3_column_text(wordsStatement, 4))
+            let textImlaei = String(cString: sqlite3_column_text(wordsStatement, 5))
+            let ayahID = surah * 1000 + ayahNumber
+
+            if ayahID != currentAyahID {
+                flushCurrentAyah()
+                currentAyahID = ayahID
+                pendingMarkerIDs = []
+                pendingWaw = nil
+            }
+
+            if wordType == "word", isWawAlatf {
+                pendingWaw = (ids: [svgElementId], imlaei: textImlaei)
+            } else if wordType == "word" {
+                // Markers seen before this word (e.g. a leading juz-star)
+                // attach to it rather than being dropped; a pending
+                // waw-alatf becomes part of this same slot.
+                let ids = (pendingWaw?.ids ?? []) + [svgElementId]
+                let imlaei = (pendingWaw?.imlaei ?? "") + textImlaei
+                currentSlots.append(RawSlot(ids: ids, markers: pendingMarkerIDs, imlaei: imlaei))
+                pendingMarkerIDs = []
+                pendingWaw = nil
+            } else if !currentSlots.isEmpty {
+                let last = currentSlots.count - 1
+                currentSlots[last] = RawSlot(
+                    ids: currentSlots[last].ids,
+                    markers: currentSlots[last].markers + [svgElementId],
+                    imlaei: currentSlots[last].imlaei
+                )
+            } else {
+                pendingMarkerIDs.append(svgElementId)
+            }
+        }
+        flushCurrentAyah()
+
+        // Reconcile each ayah's SVG-indexed raw slots against its Tanzil
+        // ground-truth word count, producing slots indexed the same way as
+        // `flatWords`/`ayah.groundTruthWords` - see `reconcileWordSlots`.
+        var builtWordMaps: [AyahWordMap] = []
+        builtWordMaps.reserveCapacity(loaded.count)
+        var fallbackIndices: Set<Int> = []
+        for (ayahIndex, ayah) in loaded.enumerated() {
+            let raw = rawSlotsByAyahID[ayah.id] ?? []
+            let svgSkeletons = raw.map { normalizeArabicSkeleton($0.imlaei) }
+            let tanzilSkeletons = ayah.groundTruthSkeletonWords
+            let mapping = reconcileWordSlots(svgSkeletons: svgSkeletons, tanzilSkeletons: tanzilSkeletons)
+            let resolvedMapping: [Int]
+            if let mapping {
+                resolvedMapping = mapping
+            } else {
+                fallbackIndices.insert(ayahIndex)
+                resolvedMapping = proportionalWordSlotMapping(svgCount: raw.count, tanzilCount: tanzilSkeletons.count)
+            }
+            let slots = resolvedMapping.map { svgIndex -> WordSlot in
+                guard raw.indices.contains(svgIndex) else { return WordSlot(svgElementIds: [], markerSvgElementIds: []) }
+                return WordSlot(svgElementIds: raw[svgIndex].ids, markerSvgElementIds: raw[svgIndex].markers)
+            }
+            builtWordMaps.append(AyahWordMap(page: ayah.startPage, slots: slots))
+        }
+        wordMaps = builtWordMaps
+        wordSlotFallbackAyahIndices = fallbackIndices
+
+        var byPage: [Int: [Int]] = [:]
+        for (ayahIndex, ayah) in loaded.enumerated() {
+            byPage[ayah.startPage, default: []].append(ayahIndex)
+        }
+        ayahIndicesByPage = byPage
     }
 
     /// The flat-word index of the first word of the earliest ayah whose

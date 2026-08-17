@@ -25,6 +25,14 @@ struct ContentView: View {
     @State private var mountedRightPages: [Int] = [1]
     @State private var recitationBar = RecitationBarState()
     @State private var recitationSession: RecitationSession?
+    @State private var recitationProgress = RecitationProgress()
+    /// Opacity for the whole spread stack, used only for the cross-fade
+    /// transition on a non-adjacent recitation-driven page jump (see
+    /// `jumpToPage(_:)`) - the geometric offset system `xOffset(for:)`
+    /// drives isn't built for jumps that aren't to a neighboring spread, so
+    /// a big jump fades out, snaps instantly, then fades back in instead of
+    /// sliding across every mounted spread in between.
+    @State private var spreadOpacity: Double = 1
     private let maxMountedSpreads = 20
     /// How many extra spreads beyond the immediate neighbor to
     /// speculatively warm, in whichever direction the user just paged -
@@ -68,6 +76,7 @@ struct ContentView: View {
                     spreadView(for: right)
                         .offset(x: xOffset(for: right, containerWidth: geo.size.width))
                 }
+                .opacity(spreadOpacity)
 
                 // Sits above the page WKWebViews so the drag is never
                 // swallowed by their own event handling.
@@ -93,13 +102,17 @@ struct ContentView: View {
             RecitationControlBar(state: recitationBar) {
                 let session = RecitationSession(
                     currentPages: { rightPage...(rightPage + 1) },
-                    barState: recitationBar
+                    barState: recitationBar,
+                    onProgress: { recitationProgress.apply($0) },
+                    onPageJump: { jumpToPage($0) }
                 )
                 recitationSession = session
+                recitationProgress.beginSession()
                 session.start()
             } onStopReciting: {
                 recitationSession?.stop()
                 recitationSession = nil
+                recitationProgress.endSession()
             }
         }
         .onAppear {
@@ -174,11 +187,73 @@ struct ContentView: View {
     @ViewBuilder
     private func pageView(for page: Int) -> some View {
         if let url = store.svgURL(for: page) {
-            MushafPageView(svgURL: url, isOpenerPage: page <= 2)
+            MushafPageView(svgURL: url, isOpenerPage: page <= 2, wordDisplayState: wordDisplayState(for: page))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             pageBackground
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    /// Pure function of a page number, so it's correct even for a page
+    /// that isn't currently mounted - whatever page eventually mounts just
+    /// calls this fresh, no separate "apply state to newly-mounted page"
+    /// step needed.
+    ///
+    /// The active page is checked *before* everything else - even if it
+    /// was already fully passed once (the reciter backtracked to repeat an
+    /// earlier ayah), it must still go through `.masked` so the highlight
+    /// can track the backtrack, not blanket `.unmasked` (which has no
+    /// per-word highlight at all). Every page strictly before the active
+    /// one reveals unconditionally, whether or not it was individually
+    /// recited this session - starting on page 4 reveals pages 1-3 too.
+    /// `highestReachedPage` covers the one remaining case that alone
+    /// doesn't: a page already passed via forward progress, then
+    /// backtracked behind, which is now numerically *after* the active page
+    /// but must still stay revealed rather than reverting to hidden.
+    private func wordDisplayState(for page: Int) -> MushafPageView.WordDisplayState {
+        guard recitationProgress.isActive else { return .unmasked }
+        if recitationProgress.activePage == page {
+            return .masked(
+                revealedIDs: recitationProgress.revealedWordIDsOnActivePage,
+                highlightedIDs: recitationProgress.highlightedWordIDs
+            )
+        }
+        if let active = recitationProgress.activePage, page < active {
+            return .unmasked
+        }
+        if let highest = recitationProgress.highestReachedPage, page <= highest {
+            return .unmasked
+        }
+        return .masked(revealedIDs: [], highlightedIDs: [])
+    }
+
+    /// Follows the reciter to whichever page they're currently on. Reuses
+    /// the neighbor-carry spring only when the target is exactly one
+    /// spread away (the common case as recitation continues page by page);
+    /// anything farther - typically just the first jump of a session, from
+    /// wherever the app happened to be showing to wherever the reciter
+    /// actually started - cross-fades instead, since the spring's
+    /// carry-offset math only makes sense for a single-step neighbor swap.
+    private func jumpToPage(_ page: Int) {
+        let target = oddPageAtOrBelow(page)
+        guard target != rightPage else { return }
+        registerVisit(target)
+
+        guard abs(target - rightPage) == 2 else {
+            withAnimation(.easeOut(duration: 0.15)) {
+                spreadOpacity = 0
+            } completion: {
+                rightPage = target
+                withAnimation(.easeIn(duration: 0.2)) {
+                    spreadOpacity = 1
+                }
+            }
+            return
+        }
+
+        withAnimation(DragPhysics.commitSpring) {
+            rightPage = target
         }
     }
 
