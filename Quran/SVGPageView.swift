@@ -13,10 +13,42 @@ struct MushafPageView: NSViewRepresentable {
     /// Pages 1-2 only: give the Quranic text more crop padding than
     /// normal pages (0.03) so it reads a bit smaller/less zoomed.
     var isOpenerPage: Bool = false
+    /// Live-recitation word masking, driven by `RecitationProgress`.
+    /// `.unmasked` (the default) leaves every word at its normal color -
+    /// no recitation session in progress, or this page's ayahs are already
+    /// fully revealed for the session.
+    var wordDisplayState: WordDisplayState = .unmasked
+
+    enum WordDisplayState: Equatable {
+        case unmasked
+        /// `revealedIDs` empty means every word on the page is hidden
+        /// (not yet reached). `highlightedIDs` (a slot can be more than one
+        /// SVG glyph - see `WordSlot.svgElementIds`) are always also
+        /// included in `revealedIDs`.
+        case masked(revealedIDs: Set<String>, highlightedIDs: Set<String>)
+    }
 
     /// The only tunable knob for pages 1-2 - not used by any other page.
     private enum OpenerLayout {
         static let contentPadFraction: Double = 0.35
+    }
+
+    private func jsonLiteral<T: Encodable>(_ value: T) -> String {
+        (try? JSONEncoder().encode(value)).flatMap { String(data: $0, encoding: .utf8) } ?? "null"
+    }
+
+    /// JS call that fully applies `state` to whichever md-word-* elements
+    /// need it - see `__applyWordMask`/`__clearWordMask` in the page's own
+    /// script for what actually runs.
+    private func wordMaskJSCall(for state: WordDisplayState) -> String {
+        switch state {
+        case .unmasked:
+            return "__clearWordMask();"
+        case .masked(let revealedIDs, let highlightedIDs):
+            let revealedJSON = jsonLiteral(Array(revealedIDs))
+            let highlightedJSON = jsonLiteral(Array(highlightedIDs))
+            return "__applyWordMask(\(revealedJSON), \(highlightedJSON));"
+        }
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -27,9 +59,18 @@ struct MushafPageView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        guard context.coordinator.loadedURL != svgURL else { return }
-        context.coordinator.loadedURL = svgURL
+        guard context.coordinator.loadedURL == svgURL else {
+            context.coordinator.loadedURL = svgURL
+            loadFreshPage(into: webView, context: context)
+            return
+        }
 
+        guard context.coordinator.appliedWordDisplayState != wordDisplayState else { return }
+        context.coordinator.appliedWordDisplayState = wordDisplayState
+        webView.evaluateJavaScript(wordMaskJSCall(for: wordDisplayState))
+    }
+
+    private func loadFreshPage(into webView: WKWebView, context: Context) {
         guard let svgMarkup = try? String(contentsOf: svgURL, encoding: .utf8) else { return }
         let inlinedSVG = svgMarkup.replacingOccurrences(
             of: #"^\s*<\?xml[^>]*\?>"#,
@@ -67,6 +108,39 @@ struct MushafPageView: NSViewRepresentable {
             </div>
         </div>
         <script>
+        // Live-recitation word masking. Operates on the original md-word-*
+        // <g> elements (inside the hidden .source div, never displayed
+        // directly) - inline styles set here render through the <use
+        // href="#md-page-inner"> clone in #crop-content, since a <use>
+        // instance carries inline style set on its referenced element.
+        // Global (not wrapped in the IIFE below) so later calls from
+        // evaluateJavaScript can reach them after the initial load.
+        function __applyWordMask(revealedIds, highlightedIds) {
+            var revealedSet = {};
+            for (var i = 0; i < revealedIds.length; i++) { revealedSet[revealedIds[i]] = true; }
+            var highlightedSet = {};
+            for (var h = 0; h < highlightedIds.length; h++) { highlightedSet[highlightedIds[h]] = true; }
+            var all = document.querySelectorAll('.source [id^="md-word-"]');
+            for (var j = 0; j < all.length; j++) {
+                var el = all[j];
+                if (highlightedSet[el.id]) {
+                    el.style.visibility = 'visible';
+                    el.style.fill = '#FFC94A';
+                } else if (revealedSet[el.id]) {
+                    el.style.visibility = 'visible';
+                    el.style.fill = '';
+                } else {
+                    el.style.visibility = 'hidden';
+                }
+            }
+        }
+        function __clearWordMask() {
+            var all = document.querySelectorAll('.source [id^="md-word-"]');
+            for (var i = 0; i < all.length; i++) {
+                all[i].style.visibility = '';
+                all[i].style.fill = '';
+            }
+        }
         (function() {
             var regions = [
                 ['md-non-quranic-header-surah-name', 'crop-surahNameHeader'],
@@ -119,10 +193,12 @@ struct MushafPageView: NSViewRepresentable {
                 hizbHost.style.visibility = 'visible';
             }
         })();
+        \(wordMaskJSCall(for: wordDisplayState))
         </script>
         </body></html>
         """
         webView.loadHTMLString(html, baseURL: svgURL.deletingLastPathComponent())
+        context.coordinator.appliedWordDisplayState = wordDisplayState
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -139,5 +215,6 @@ struct MushafPageView: NSViewRepresentable {
     /// gap during which the page sat fully hidden.
     final class Coordinator: NSObject, WKNavigationDelegate {
         var loadedURL: URL?
+        var appliedWordDisplayState: WordDisplayState?
     }
 }

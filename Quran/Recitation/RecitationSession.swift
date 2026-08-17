@@ -3,7 +3,8 @@ import Foundation
 /// Orchestrates live recitation -> ayah matching. Owns the mic capture and
 /// ASR transducer, re-decodes the rolling audio buffer on a ~0.5s tick, and
 /// drives `AyahAligner` to identify + track the reciter's position in the
-/// Quran.
+/// Quran - and, on top of that, `RecitationProgressTracker` to turn each
+/// identification/commit into word-reveal/highlight state for the mushaf UI.
 ///
 /// State is deliberately small: `confirmedPosition` (a flat-word index) and
 /// `floor` (where the current identification attempt began - a backtrack
@@ -16,11 +17,13 @@ import Foundation
 ///
 /// `nonisolated` so its background tick loop can call the blocking ASR
 /// decode without hopping through the main actor; only the UI-facing
-/// `barState` write hops back via `@MainActor`.
+/// `barState`/`onProgress`/`onPageJump` writes hop back via `@MainActor`.
 nonisolated final class RecitationSession {
     private let mic = MicrophoneCapture()
     private let currentPages: () -> ClosedRange<Int>
     private let barState: RecitationBarState
+    private let onProgress: @MainActor (RecitationProgressSnapshot) -> Void
+    private let onPageJump: @MainActor (Int) -> Void
 
     private var loopTask: Task<Void, Never>?
 
@@ -44,10 +47,18 @@ nonisolated final class RecitationSession {
     private var lastPrintedAyahIndex: Int?
 
     private let anchorWordCount = 3
+    private let progressTracker = RecitationProgressTracker()
 
-    init(currentPages: @escaping () -> ClosedRange<Int>, barState: RecitationBarState) {
+    init(
+        currentPages: @escaping () -> ClosedRange<Int>,
+        barState: RecitationBarState,
+        onProgress: @escaping @MainActor (RecitationProgressSnapshot) -> Void,
+        onPageJump: @escaping @MainActor (Int) -> Void
+    ) {
         self.currentPages = currentPages
         self.barState = barState
+        self.onProgress = onProgress
+        self.onPageJump = onPageJump
     }
 
     func start() {
@@ -58,6 +69,7 @@ nonisolated final class RecitationSession {
         anchorWords = []
         wordsSinceIdentification = 0
         lastPrintedAyahIndex = nil
+        progressTracker.reset()
 
         let barState = barState
         loopTask = Task {
@@ -97,6 +109,15 @@ nonisolated final class RecitationSession {
             confirmedPosition = nil
             lastTranscript = ""
             anchorWords = []
+            // A pause/resume is how the reciter signals "I'm jumping to an
+            // unrelated part of the Quran" - the reveal/highlight state
+            // from before the pause shouldn't carry over into whatever
+            // comes next, so this resets exactly like a fresh session start.
+            progressTracker.reset()
+            dispatch(RecitationProgressSnapshot(
+                highestReachedPage: nil, activePage: nil,
+                revealedWordIDsOnActivePage: [], highlightedWordIDs: []
+            ))
             do {
                 try await mic.start()
             } catch {
@@ -142,6 +163,9 @@ nonisolated final class RecitationSession {
             anchorWords = []
             wordsSinceIdentification = 0
             lastPrintedAyahIndex = nil
+
+            let snapshot = progressTracker.handleIdentification(flatPosition: result.flatPosition, database: database)
+            dispatch(snapshot)
             return
         }
 
@@ -167,12 +191,24 @@ nonisolated final class RecitationSession {
         commit(result.commitSteps, observed: observed, observedTashkeel: observedTashkeel, database: database)
     }
 
-    /// Prints a verdict for each newly finalized step and advances the
-    /// anchor. `tashkeelOK` (only meaningful for `.match` steps) comes
-    /// precomputed from `AyahAligner.buildResult`, which already applied
-    /// the same grace-holdback to it as a wrong word - by the time a step
-    /// reaches here, both the skeleton-level and tashkeel-level verdicts
-    /// are final, so this only needs to print them.
+    private func dispatch(_ snapshot: RecitationProgressSnapshot) {
+        let onProgress = onProgress
+        let onPageJump = onPageJump
+        Task { @MainActor in
+            onProgress(snapshot)
+            if let page = snapshot.activePage {
+                onPageJump(page)
+            }
+        }
+    }
+
+    /// Prints a verdict for each newly finalized step, feeds them to
+    /// `progressTracker` for the mushaf UI, and advances the anchor.
+    /// `tashkeelOK` (only meaningful for `.match` steps) comes precomputed
+    /// from `AyahAligner.buildResult`, which already applied the same
+    /// grace-holdback to it as a wrong word - by the time a step reaches
+    /// here, both the skeleton-level and tashkeel-level verdicts are final,
+    /// so this only needs to print them.
     private func commit(
         _ steps: [(flatIndex: Int, step: AyahAligner.Step, tashkeelOK: Bool?)],
         observed: [String], observedTashkeel: [String], database: QuranDatabase
@@ -230,5 +266,8 @@ nonisolated final class RecitationSession {
             let start = max(0, lastObserved + 1 - anchorWordCount)
             anchorWords = Array(observed[start..<(lastObserved + 1)])
         }
+
+        let snapshot = progressTracker.handleCommits(steps, database: database)
+        dispatch(snapshot)
     }
 }
