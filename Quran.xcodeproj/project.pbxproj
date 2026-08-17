@@ -8,17 +8,27 @@
 
 /* Begin PBXBuildFile section */
 		0B6E0AEA9106B98E93895247 /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 044592F2C4724E64AEDCEFD7 /* WebKit.framework */; };
+		5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3FF94B0BF01D49A69DBE31AC /* XCTest.framework */; };
 		A1B2C3D4E5F607182934B560 /* sherpa-onnx in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4E5F60718293A4B5F /* sherpa-onnx */; };
 		A1B2C3D4E5F60718293A4B5C /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */; };
-		5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 3FF94B0BF01D49A69DBE31AC /* XCTest.framework */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		0BBB19CE49FD4B18AD6BBAA8 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 28699FADDFCAB9A94B659998 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 93BF9874448D1DD7A3030F1D;
+			remoteInfo = Quran;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		044592F2C4724E64AEDCEFD7 /* WebKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WebKit.framework; path = System/Library/Frameworks/WebKit.framework; sourceTree = SDKROOT; };
-		A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
-		B4010BF5733C9D64AE98655C /* Quran.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quran.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3FF94B0BF01D49A69DBE31AC /* XCTest.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = XCTest.framework; path = Library/Frameworks/XCTest.framework; sourceTree = DEVELOPER_DIR; };
 		76C16DD7491C4999A36D8125 /* QuranTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = QuranTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		B4010BF5733C9D64AE98655C /* Quran.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quran.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -40,6 +50,14 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		32D6305E0C8049C3B12CA0FD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		91C5D58BA2273F7AD616C962 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -47,14 +65,6 @@
 				0B6E0AEA9106B98E93895247 /* WebKit.framework in Frameworks */,
 				A1B2C3D4E5F60718293A4B5C /* libsqlite3.tbd in Frameworks */,
 				A1B2C3D4E5F607182934B560 /* sherpa-onnx in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		32D6305E0C8049C3B12CA0FD /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				5B01A9E66EB045439D27B7C5 /* XCTest.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -66,6 +76,7 @@
 			children = (
 				044592F2C4724E64AEDCEFD7 /* WebKit.framework */,
 				A1B2C3D4E5F60718293A4B5D /* libsqlite3.tbd */,
+				3FF94B0BF01D49A69DBE31AC /* XCTest.framework */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -93,6 +104,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		2FB120BF23ED4774AD0C21E1 /* QuranTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B09C1ACF31FB4E4CAAEF207B /* Build configuration list for PBXNativeTarget "QuranTests" */;
+			buildPhases = (
+				8192CE7DFA30468F85925979 /* Sources */,
+				32D6305E0C8049C3B12CA0FD /* Frameworks */,
+				8703A51E7E254629AB7E4652 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				81D3D0A6C50041DF9985087A /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				915067AFE85E43A8BF59938C /* QuranTests */,
+			);
+			name = QuranTests;
+			productName = QuranTests;
+			productReference = 76C16DD7491C4999A36D8125 /* QuranTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		93BF9874448D1DD7A3030F1D /* Quran */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 14604537A6E89B69F5A167A3 /* Build configuration list for PBXNativeTarget "Quran" */;
@@ -118,27 +150,6 @@
 			productReference = B4010BF5733C9D64AE98655C /* Quran.app */;
 			productType = "com.apple.product-type.application";
 		};
-		2FB120BF23ED4774AD0C21E1 /* QuranTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = B09C1ACF31FB4E4CAAEF207B /* Build configuration list for PBXNativeTarget "QuranTests" */;
-			buildPhases = (
-				8192CE7DFA30468F85925979 /* Sources */,
-				32D6305E0C8049C3B12CA0FD /* Frameworks */,
-				8703A51E7E254629AB7E4652 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				81D3D0A6C50041DF9985087A /* PBXTargetDependency */,
-			);
-			fileSystemSynchronizedGroups = (
-				915067AFE85E43A8BF59938C /* QuranTests */,
-			);
-			name = QuranTests;
-			productName = QuranTests;
-			productReference = 76C16DD7491C4999A36D8125 /* QuranTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -149,12 +160,12 @@
 				LastSwiftUpdateCheck = 2650;
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
-					93BF9874448D1DD7A3030F1D = {
-						CreatedOnToolsVersion = 26.5;
-					};
 					2FB120BF23ED4774AD0C21E1 = {
 						CreatedOnToolsVersion = 26.5;
 						TestTargetID = 93BF9874448D1DD7A3030F1D;
+					};
+					93BF9874448D1DD7A3030F1D = {
+						CreatedOnToolsVersion = 26.5;
 					};
 				};
 			};
@@ -181,25 +192,15 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXContainerItemProxy section */
-		0BBB19CE49FD4B18AD6BBAA8 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 28699FADDFCAB9A94B659998 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 93BF9874448D1DD7A3030F1D;
-			remoteInfo = Quran;
-		};
-/* End PBXContainerItemProxy section */
-
 /* Begin PBXResourcesBuildPhase section */
-		DB2BAFE1170DF20D9614984B /* Resources */ = {
+		8703A51E7E254629AB7E4652 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		8703A51E7E254629AB7E4652 /* Resources */ = {
+		DB2BAFE1170DF20D9614984B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -252,6 +253,26 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		0322F6BB6E404FEA903262CB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
+			};
+			name = Debug;
+		};
 		4A36FF488AE9E42266BA5CB9 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -337,6 +358,26 @@
 			};
 			name = Release;
 		};
+		C25EA41080BC418BABF4465D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = JF729NQ995;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
+			};
+			name = Release;
+		};
 		FEB1B5E7AA71F43C7CE497DD /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -358,46 +399,6 @@
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
-		0322F6BB6E404FEA903262CB /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = JF729NQ995;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
-			};
-			name = Debug;
-		};
-		C25EA41080BC418BABF4465D /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = JF729NQ995;
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-					"@loader_path/../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.luxbug.QuranTests;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SWIFT_EMIT_LOC_STRINGS = NO;
-				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Quran.app/Contents/MacOS/Quran";
 			};
 			name = Release;
 		};

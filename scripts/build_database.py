@@ -32,6 +32,53 @@ VERSE_FIELDS = (
     "ruku_number,sajdah_number,sajdah_type,page_number"
 )
 
+# Two Tanzil "Simple" text variants (CC BY 3.0, tanzil.net), both plain
+# (non-mushaf-rasm) Arabic spelling with full tashkeel, differing only in
+# whether idgham/assimilation is notated (e.g. "مِنْ رَبِّهِمْ" letter-by-
+# letter vs. the assimilated "مِّن رَّبِّهِمْ", sukun/shaddah merged to
+# represent the pronunciation rule). Found live (2026-08-17): the ASR isn't
+# consistently one or the other per word - e.g. it transcribed "مِن" (no
+# sukun, assimilated-style) for a word the plain file spells "مِنْ", even
+# though nothing about that word triggers real idgham. Rather than guess
+# which convention the model follows for a given word, both are loaded as
+# ground truth (`text_imlaei_tashkeel` / `text_imlaei_tashkeel_alt`) and a
+# match against *either* counts as correct (see
+# `Quran/Recitation/RecitationSession.swift`). `text_imlaei` (skeleton
+# matching) is derived from the plain file only - skeleton-stripping erases
+# this distinction anyway, so it doesn't matter which source feeds it.
+TANZIL_PLAIN_PATH = Path(__file__).resolve().parent / "quran-simple-plain.txt"
+TANZIL_ASSIMILATED_PATH = Path(__file__).resolve().parent / "quran-simple-assimilated.txt"
+
+# Mirrors Quran/Data/ArabicNormalization.swift's normalizeArabicSkeleton -
+# strips diacritics/tatweel and folds every hamza seat to bare alif, so
+# `ayahs.text_imlaei` stays genuinely skeleton-form as its schema comment
+# promises (Swift-side normalization is idempotent on top of this, so this
+# isn't load-bearing for matching, just keeps the stored column honest).
+_DIACRITIC_RANGES = (
+    (0x0610, 0x061A), (0x064B, 0x065F), (0x0670, 0x0670), (0x06D6, 0x06ED), (0x0640, 0x0640),
+)
+_HAMZA_SEATS = {0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0671}
+
+
+def skeleton_strip(text):
+    out = []
+    for ch in text:
+        cp = ord(ch)
+        if any(lo <= cp <= hi for lo, hi in _DIACRITIC_RANGES):
+            continue
+        out.append("ا" if cp in _HAMZA_SEATS else ch)
+    return " ".join("".join(out).split())
+# Every surah's ayah 1 except Al-Fatiha (where it IS the Bismillah) and
+# At-Tawbah (which has none) carries this exact 4-word Bismillah as a literal
+# text prefix in Tanzil's data - the SVG-derived text_uthmani/text_imlaei do
+# not include it, so it must be stripped for the two ground-truth word lists
+# to stay aligned. Verified against the file directly (2026-08-16). Not
+# hardcoded as a literal - Tanzil's own combining-mark order for shaddah vs.
+# vowel (e.g. "للَّه" as shaddah-then-fatha, not fatha-then-shaddah) doesn't
+# match a hand-typed string reliably, so the prefix is read from the file
+# itself (1:1, which *is* exactly this phrase) instead.
+SURAHS_WITHOUT_BISMILLAH_PREFIX = {1, 9}
+
 SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
 
@@ -65,6 +112,8 @@ CREATE TABLE ayahs (
   ayah_number INTEGER NOT NULL,
   text_uthmani TEXT NOT NULL,
   text_imlaei TEXT NOT NULL,
+  text_imlaei_tashkeel TEXT NOT NULL,
+  text_imlaei_tashkeel_alt TEXT NOT NULL,
   word_count INTEGER NOT NULL,
   start_page INTEGER NOT NULL REFERENCES pages(number),
   end_page INTEGER NOT NULL REFERENCES pages(number),
@@ -134,6 +183,43 @@ def fetch_qul_surahs_and_verses():
             surah_s, ayah_s = v["verse_key"].split(":")
             verses_by_key[(int(surah_s), int(ayah_s))] = v
     return {c["id"]: c for c in chapters}, verses_by_key
+
+
+# --- Tanzil "Simple" text (tashkeel ground truth) --------------------------
+
+
+def fetch_tanzil_text(path):
+    """Parses `surah|ayah|text` lines (skipping Tanzil's header/footer comment
+    lines, which don't start with a digit) and strips the Bismillah prefix
+    Tanzil embeds in ayah 1 of every surah except Al-Fatiha/At-Tawbah - see
+    SURAHS_WITHOUT_BISMILLAH_PREFIX above."""
+    raw = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line or not line[0].isdigit():
+            continue
+        surah_s, ayah_s, text = line.split("|", 2)
+        raw[(int(surah_s), int(ayah_s))] = text
+
+    # 1:1 *is* exactly the 4-word Bismillah, so it's the canonical reference
+    # for words 2-4 ("اللَّهِ الرَّحْمَٰنِ الرَّحِيمِ") - but word 1 itself
+    # ("بِسْمِ") has a real, verified spelling variant (a shaddah on the ب,
+    # e.g. Surahs 95/97 - not a typo, both forms appear in Tanzil's own data),
+    # so only words 2-4 are checked for an exact match; word 1 is dropped
+    # unconditionally as long as words 2-4 confirm this really is the
+    # Bismillah and not some other 4-word coincidence.
+    bismillah_words = raw[(1, 1)].split(" ")
+    if len(bismillah_words) != 4:
+        raise AssertionError(f"expected 1:1 to be exactly the 4-word Bismillah, got: {raw[(1, 1)]!r}")
+
+    texts = {}
+    for (surah, ayah_number), text in raw.items():
+        if ayah_number == 1 and surah not in SURAHS_WITHOUT_BISMILLAH_PREFIX:
+            words = text.split(" ")
+            if len(words) < 5 or words[1:4] != bismillah_words[1:4]:
+                raise AssertionError(f"expected Bismillah prefix on {surah}:1, got: {text[:50]!r}")
+            text = " ".join(words[4:])
+        texts[(surah, ayah_number)] = text
+    return texts
 
 
 # --- SVG parsing -----------------------------------------------------------
@@ -246,13 +332,20 @@ def join_words(words, field):
     return "".join(parts)
 
 
-def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses):
+def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts, tanzil_texts_alt):
     missing_marks = set(ayahs) - set(aya_marks)
     if missing_marks:
         raise AssertionError(f"ayahs with no aya-mark in SVGs: {sorted(missing_marks)[:10]}")
     missing_qul = set(ayahs) - set(qul_verses)
     if missing_qul:
         raise AssertionError(f"ayahs missing from QUL: {sorted(missing_qul)[:10]}")
+    for name, texts in (("plain", tanzil_texts), ("assimilated", tanzil_texts_alt)):
+        missing_tanzil = set(ayahs) - set(texts)
+        if missing_tanzil:
+            raise AssertionError(f"ayahs missing from Tanzil {name} text: {sorted(missing_tanzil)[:10]}")
+        extra_tanzil = set(texts) - set(ayahs)
+        if extra_tanzil:
+            raise AssertionError(f"Tanzil {name} text has ayahs not in SVGs: {sorted(extra_tanzil)[:10]}")
 
     ayah_rows = []
     surah_pages = {}  # surah -> [min_page, max_page]
@@ -267,7 +360,7 @@ def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses):
 
         text_words = [w for w in a["words"] if w["word_type"] in TEXT_WORD_TYPES]
         text_uthmani = join_words(text_words, "text_uthmani")
-        text_imlaei = join_words(text_words, "text_imlaei")
+        text_imlaei = skeleton_strip(tanzil_texts[key])
 
         svg_is_sajda = any(w["word_type"] == "sajda-mehrab" for w in a["words"])
         qul_is_sajda = qv.get("sajdah_number") is not None
@@ -280,6 +373,8 @@ def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses):
             "ayah_number": ayah_number,
             "text_uthmani": text_uthmani,
             "text_imlaei": text_imlaei,
+            "text_imlaei_tashkeel": tanzil_texts[key],
+            "text_imlaei_tashkeel_alt": tanzil_texts_alt[key],
             "word_count": len(text_words),
             "start_page": a["start_page"],
             "end_page": end_page,
@@ -371,11 +466,11 @@ def write_db(surah_rows, page_rows, ayah_rows, word_rows):
     )
     conn.executemany(
         """INSERT INTO ayahs
-           (id, surah, ayah_number, text_uthmani, text_imlaei, word_count,
+           (id, surah, ayah_number, text_uthmani, text_imlaei, text_imlaei_tashkeel, text_imlaei_tashkeel_alt, word_count,
             start_page, end_page, start_line, end_line,
             juz_number, hizb_number, rub_el_hizb_number, manzil_number, ruku_number,
             is_sajda, sajda_type)
-           VALUES (:id, :surah, :ayah_number, :text_uthmani, :text_imlaei, :word_count,
+           VALUES (:id, :surah, :ayah_number, :text_uthmani, :text_imlaei, :text_imlaei_tashkeel, :text_imlaei_tashkeel_alt, :word_count,
                    :start_page, :end_page, :start_line, :end_line,
                    :juz_number, :hizb_number, :rub_el_hizb_number, :manzil_number, :ruku_number,
                    :is_sajda, :sajda_type)""",
@@ -402,8 +497,18 @@ def main():
     qul_chapters, qul_verses = fetch_qul_surahs_and_verses()
     print(f"  {len(qul_chapters)} chapters, {len(qul_verses)} verses")
 
+    print("Parsing Tanzil simple-plain text...")
+    tanzil_texts = fetch_tanzil_text(TANZIL_PLAIN_PATH)
+    print(f"  {len(tanzil_texts)} ayahs")
+
+    print("Parsing Tanzil simple-assimilated text...")
+    tanzil_texts_alt = fetch_tanzil_text(TANZIL_ASSIMILATED_PATH)
+    print(f"  {len(tanzil_texts_alt)} ayahs")
+
     print("Joining...")
-    surah_rows, page_rows, ayah_rows, word_rows = assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses)
+    surah_rows, page_rows, ayah_rows, word_rows = assemble(
+        ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts, tanzil_texts_alt
+    )
 
     print("Validating...")
     validate(surah_rows, page_rows, ayah_rows, word_rows)

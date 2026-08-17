@@ -6,64 +6,50 @@ struct Ayah {
     let surah: Int
     let ayahNumber: Int
     let textUthmani: String
-    /// Harakat-stripped skeleton, for candidate matching (§7).
-    let skeletonText: String
-    /// Tashkeel-normalized per-word text_uthmani, for per-word correctness
-    /// comparison once an ayah has already been identified.
-    let tashkeelWords: [String]
+    /// Per-word ground truth for live per-word correctness checking, from
+    /// Tanzil's "Simple Plain" text (`text_imlaei_tashkeel` - plain,
+    /// non-mushaf-rasm, letter-by-letter diacritics, no idgham/assimilation
+    /// notation). Each entry pre-normalized with `normalizeGroundTruthTashkeel`
+    /// at load time.
+    let groundTruthWords: [String]
+    /// Alternate per-word ground truth, from Tanzil's assimilated "Simple"
+    /// variant (`text_imlaei_tashkeel_alt` - e.g. "مِّن رَّبِّهِمْ" instead
+    /// of `groundTruthWords`' "مِنْ رَبِّهِمْ"). Found live: the ASR isn't
+    /// consistently one convention or the other per word, so a transcribed
+    /// word is judged tashkeel-correct if it matches *either* array (see
+    /// `RecitationSession`) - same count/positions as `groundTruthWords` by
+    /// construction (both files share the same Tanzil tokenization).
+    let groundTruthWordsAlt: [String]
+    /// Skeleton (harakat-stripped, hamza-folded) form of each entry in
+    /// `groundTruthWords` - same count/positions by construction (both
+    /// derived from the same Tanzil "Simple Plain" source), used by
+    /// `AyahAligner` for candidate identification search.
+    let groundTruthSkeletonWords: [String]
     let startPage: Int
     let endPage: Int
 }
 
-/// Two consecutive ayahs (in canonical mushaf order, surah boundaries
-/// included), so a tail that straddles an ayah boundary before anything has
-/// resolved yet can still be found - see AyahMatcher's cross-ayah-boundary
-/// fallback. `first` is the ayah the reciter is completing; `second` is the
-/// one they've already started on.
-struct AyahPair {
-    let first: Ayah
-    let second: Ayah
-    let joinedSkeleton: String
+/// One entry in the whole-Quran flattened word stream (`QuranDatabase.flatWords`),
+/// used uniformly by `AyahAligner` for both identification and tracking so
+/// tracking can flow across ayah boundaries with no discrete "transition"
+/// event.
+struct FlatWord {
+    let ayahIndex: Int
+    let wordIndexInAyah: Int
+    let skeleton: String
+    let groundTruth: String
+    /// See `Ayah.groundTruthWordsAlt`.
+    let groundTruthAlt: String
 }
-
-/// A surah-opening muqatta'at token (disconnected letters, e.g. "الم") paired
-/// with just the single word immediately following it, matched space-
-/// insensitively. There is no real speech pause after a muqatta'at token, so
-/// the ASR can glue it onto whatever comes next (e.g. "المذلك") in a way
-/// that matches neither ayah's real skeleton text under normal (space-
-/// aware) matching. Deliberately kept to *one* following word (not the rest
-/// of the ayah/next ayah) to keep the comparison string short - some
-/// muqatta'at ayahs (e.g. 14:1 "الر ۚ كتاب...") carry substantial text of
-/// their own after the letters, and matching against that whole text would
-/// risk incidental false-positive substring collisions with unrelated
-/// common words elsewhere in a session's transcript.
-struct MuqattaatEntry {
-    /// The ayah to resolve to on a match: the opening ayah itself when the
-    /// following word is more of that same (composite) ayah, or the next
-    /// ayah when the opening is pure disconnected letters on their own.
-    let resolvesTo: Ayah
-    let strippedJoined: String
-}
-
-/// Surah, ayah-number pairs for the known disconnected-letter openings.
-/// Ash-Shura (42) splits its muqatta'at across two ayahs (حم at 42:1, عسق
-/// at 42:2) - both included since either could get glued to what follows.
-private let muqattaatAyahs: [(surah: Int, ayah: Int)] = [
-    (2, 1), (3, 1), (7, 1), (10, 1), (11, 1), (12, 1), (13, 1), (14, 1), (15, 1),
-    (19, 1), (20, 1), (26, 1), (27, 1), (28, 1), (29, 1), (30, 1), (31, 1), (32, 1),
-    (36, 1), (38, 1), (40, 1), (41, 1), (42, 1), (42, 2), (43, 1), (44, 1), (45, 1),
-    (46, 1), (50, 1), (68, 1),
-]
 
 /// Loads every ayah from `quran.sqlite` once at launch and holds them in
-/// memory so live-transcription matching (§7 of the transcription plan) can
-/// linearly scan for substring candidates without touching disk per tick.
+/// memory, plus a flattened whole-Quran word stream for `AyahAligner`.
 nonisolated final class QuranDatabase {
     let ayahs: [Ayah]
-    /// Every canonically-adjacent ayah pair (surah boundaries included), for
-    /// the cross-ayah-boundary matching fallback.
-    let ayahPairs: [AyahPair]
-    let muqattaatEntries: [MuqattaatEntry]
+    let flatWords: [FlatWord]
+    /// Parallel to `ayahs` - the flat index of each ayah's first word, for
+    /// mapping an ayah to a position in `flatWords`.
+    private let ayahFlatStart: [Int]
 
     init() {
         var db: OpaquePointer?
@@ -75,8 +61,11 @@ nonisolated final class QuranDatabase {
 
         var loaded: [Ayah] = []
         // ORDER BY id (surah*1000 + ayah_number) guarantees canonical mushaf
-        // order, which `ayahPairs`/`muqattaatEntries` below rely on.
-        let sql = "SELECT id, surah, ayah_number, text_uthmani, text_imlaei, start_page, end_page FROM ayahs ORDER BY id"
+        // order, which `flatWords`/`ayahFlatStart` below rely on.
+        let sql = """
+            SELECT id, surah, ayah_number, text_uthmani, text_imlaei_tashkeel, text_imlaei_tashkeel_alt, start_page, end_page
+            FROM ayahs ORDER BY id
+            """
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
             fatalError("could not prepare ayahs query")
@@ -88,66 +77,71 @@ nonisolated final class QuranDatabase {
             let surah = Int(sqlite3_column_int(statement, 1))
             let ayahNumber = Int(sqlite3_column_int(statement, 2))
             let textUthmani = String(cString: sqlite3_column_text(statement, 3))
-            let textImlaei = String(cString: sqlite3_column_text(statement, 4))
-            let startPage = Int(sqlite3_column_int(statement, 5))
-            let endPage = Int(sqlite3_column_int(statement, 6))
+            let textImlaeiTashkeel = String(cString: sqlite3_column_text(statement, 4))
+            let textImlaeiTashkeelAlt = String(cString: sqlite3_column_text(statement, 5))
+            let startPage = Int(sqlite3_column_int(statement, 6))
+            let endPage = Int(sqlite3_column_int(statement, 7))
+
+            // Real words only - a standalone pause/waqf mark (e.g. "ۖ")
+            // appears as its own space-separated token in this data, and
+            // must be dropped so groundTruthWords/groundTruthSkeletonWords
+            // stay index-aligned with each other and with the ASR's output
+            // (which never produces a pause-mark-only token).
+            let groundTruthWords = textImlaeiTashkeel.split(separator: " ").map(String.init)
+                .filter(isRealArabicWordToken).map(normalizeGroundTruthTashkeel)
+            let groundTruthWordsAlt = textImlaeiTashkeelAlt.split(separator: " ").map(String.init)
+                .filter(isRealArabicWordToken).map(normalizeGroundTruthTashkeel)
+            let groundTruthSkeletonWords = groundTruthWords.map(normalizeArabicSkeleton)
+
+            guard groundTruthWords.count == groundTruthWordsAlt.count else {
+                fatalError("tashkeel word-count mismatch at \(surah):\(ayahNumber) - plain/assimilated Tanzil sources drifted")
+            }
+
             loaded.append(Ayah(
                 id: id, surah: surah, ayahNumber: ayahNumber,
                 textUthmani: textUthmani,
-                skeletonText: normalizeArabicSkeleton(textImlaei),
-                tashkeelWords: normalizeArabicTashkeel(textUthmani).split(separator: " ").map(String.init),
+                groundTruthWords: groundTruthWords,
+                groundTruthWordsAlt: groundTruthWordsAlt,
+                groundTruthSkeletonWords: groundTruthSkeletonWords,
                 startPage: startPage, endPage: endPage
             ))
         }
         ayahs = loaded
 
-        var pairs: [AyahPair] = []
-        pairs.reserveCapacity(max(0, loaded.count - 1))
-        for i in 0..<max(0, loaded.count - 1) {
-            let first = loaded[i]
-            let second = loaded[i + 1]
-            pairs.append(AyahPair(first: first, second: second, joinedSkeleton: first.skeletonText + " " + second.skeletonText))
-        }
-        ayahPairs = pairs
-
-        let byID = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
-        muqattaatEntries = muqattaatAyahs.compactMap { entry -> MuqattaatEntry? in
-            let id = entry.surah * 1000 + entry.ayah
-            guard let opening = byID[id] else { return nil }
-            let openingWords = opening.skeletonText.split(separator: " ").map(String.init)
-            guard let letters = openingWords.first else { return nil }
-            let resolvesTo: Ayah
-            let followingWord: String
-            if openingWords.count > 1 {
-                // Composite (e.g. 14:1 "الر ۚ كتاب...") - the letters and
-                // the rest of the text are already in the same ayah.
-                resolvesTo = opening
-                followingWord = openingWords[1]
-            } else {
-                // Pure disconnected letters alone (e.g. 2:1 "الم") - glue to
-                // the very next ayah's first word instead.
-                guard let next = byID[id + 1], let nextFirst = next.skeletonText.split(separator: " ").first else { return nil }
-                resolvesTo = next
-                followingWord = String(nextFirst)
+        var flat: [FlatWord] = []
+        var flatStart: [Int] = []
+        flat.reserveCapacity(loaded.reduce(0) { $0 + $1.groundTruthWords.count })
+        flatStart.reserveCapacity(loaded.count)
+        for (ayahIndex, ayah) in loaded.enumerated() {
+            flatStart.append(flat.count)
+            for wordIndex in 0..<ayah.groundTruthWords.count {
+                flat.append(FlatWord(
+                    ayahIndex: ayahIndex, wordIndexInAyah: wordIndex,
+                    skeleton: ayah.groundTruthSkeletonWords[wordIndex],
+                    groundTruth: ayah.groundTruthWords[wordIndex],
+                    groundTruthAlt: ayah.groundTruthWordsAlt[wordIndex]
+                ))
             }
-            return MuqattaatEntry(resolvesTo: resolvesTo, strippedJoined: letters + followingWord)
         }
+        flatWords = flat
+        ayahFlatStart = flatStart
     }
 
-    func candidates(forSkeletonSubstring skeleton: String) -> [Ayah] {
-        ayahs.filter { $0.skeletonText.contains(skeleton) }
+    /// The flat-word index of the first word of the earliest ayah whose
+    /// `startPage` is on or after `pagesBack` pages before `page` (clamped to
+    /// the very first word of the Quran) - used to bound the backtrack
+    /// tracking window (`AyahAligner`'s local-backtrack tier). `ayahs` is
+    /// sorted in canonical mushaf order, and `startPage` is non-decreasing
+    /// along that order, so the first ayah meeting the threshold is the
+    /// earliest one on or after that page.
+    func flatWordIndex(pagesBack: Int, fromPage page: Int) -> Int {
+        let targetPage = max(1, page - pagesBack)
+        let index = ayahs.firstIndex { $0.startPage >= targetPage } ?? 0
+        return ayahFlatStart[index]
     }
 
-    func pairCandidates(forSkeletonSubstring skeleton: String) -> [AyahPair] {
-        ayahPairs.filter { $0.joinedSkeleton.contains(skeleton) }
-    }
-
-    /// `strippedJoined` is a short, fixed 2-word signature (see
-    /// `MuqattaatEntry`); `stripped` is the caller's whole (possibly longer,
-    /// still-growing) tail, so containment runs the opposite direction from
-    /// `candidates(forSkeletonSubstring:)` - here we're searching for the
-    /// short signature somewhere inside the longer tail, not the reverse.
-    func muqattaatCandidates(forStrippedSubstring stripped: String) -> [MuqattaatEntry] {
-        muqattaatEntries.filter { stripped.contains($0.strippedJoined) }
+    /// The flat-word index of `ayah`'s first word.
+    func flatStart(ofAyahIndex ayahIndex: Int) -> Int {
+        ayahFlatStart[ayahIndex]
     }
 }
