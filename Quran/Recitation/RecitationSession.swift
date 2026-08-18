@@ -46,6 +46,16 @@ nonisolated final class RecitationSession {
     /// ayah transitions without needing a discrete per-ayah event.
     private var lastPrintedAyahIndex: Int?
 
+    /// Whether `confirmedPosition` is still provisional (resolved off too
+    /// few words to fully trust - see `AyahAligner.IdentificationResult`).
+    private var isProvisional = false
+    private var provisionalWordsRemaining = 0
+    /// Ayahs rejected by a prior identification attempt this session (i.e.
+    /// a provisional match that failed to track and was reopened) - passed
+    /// to `identifyAyah` so the same wrong ayah can't be immediately
+    /// re-picked. Cleared once a result is no longer provisional.
+    private var excludedAyahIndices: Set<Int> = []
+
     private let anchorWordCount = 3
     private let progressTracker = RecitationProgressTracker()
 
@@ -69,6 +79,9 @@ nonisolated final class RecitationSession {
         anchorWords = []
         wordsSinceIdentification = 0
         lastPrintedAyahIndex = nil
+        isProvisional = false
+        provisionalWordsRemaining = 0
+        excludedAyahIndices = []
         progressTracker.reset()
 
         let barState = barState
@@ -109,6 +122,9 @@ nonisolated final class RecitationSession {
             confirmedPosition = nil
             lastTranscript = ""
             anchorWords = []
+            isProvisional = false
+            provisionalWordsRemaining = 0
+            excludedAyahIndices = []
             // A pause/resume is how the reciter signals "I'm jumping to an
             // unrelated part of the Quran" - the reveal/highlight state
             // from before the pause shouldn't carry over into whatever
@@ -153,16 +169,21 @@ nonisolated final class RecitationSession {
 
         guard let position = confirmedPosition else {
             let tail = Array(skeletonWords.suffix(25))
-            guard let result = AyahAligner.identifyAyah(tailWords: tail, database: database, currentPages: currentPages()) else {
+            guard let result = AyahAligner.identifyAyah(
+                tailWords: tail, database: database, currentPages: currentPages(), excluding: excludedAyahIndices
+            ) else {
                 return
             }
             let ayah = database.ayahs[result.ayahIndex]
-            print("[ayah] identified \(ayah.surah):\(ayah.ayahNumber)  \(ayah.textUthmani)")
+            let tag = result.isProvisional ? " (provisional)" : ""
+            print("[ayah] identified\(tag) \(ayah.surah):\(ayah.ayahNumber)  \(ayah.textUthmani)")
             confirmedPosition = result.flatPosition
             floor = result.flatPosition
             anchorWords = []
             wordsSinceIdentification = 0
             lastPrintedAyahIndex = nil
+            isProvisional = result.isProvisional
+            provisionalWordsRemaining = result.isProvisional ? AyahAligner.provisionalVerificationWordCount : 0
 
             let snapshot = progressTracker.handleIdentification(flatPosition: result.flatPosition, database: database)
             dispatch(snapshot)
@@ -176,6 +197,30 @@ nonisolated final class RecitationSession {
         let result = AyahAligner.advance(
             observed: observed, observedTashkeel: observedTashkeel, confirmedPosition: position, floor: floor, database: database
         )
+
+        let provisional = AyahAligner.provisionalUpdate(
+            isProvisional: isProvisional, wordsRemaining: provisionalWordsRemaining, outcome: result.outcome, commitSteps: result.commitSteps
+        )
+        if provisional.shouldReopen {
+            // A provisional guess that immediately fails to track is a red
+            // flag it was wrong - reopen from scratch, excluding it, rather
+            // than sitting frozen (see `AyahAligner.provisionalUpdate`).
+            let rejectedAyahIndex = database.flatWords[min(position, database.flatWords.count - 1)].ayahIndex
+            excludedAyahIndices.insert(rejectedAyahIndex)
+            print("[ayah] reopening identification, previous guess didn't hold")
+            confirmedPosition = nil
+            floor = 0
+            anchorWords = []
+            isProvisional = false
+            provisionalWordsRemaining = 0
+            return
+        }
+        isProvisional = provisional.isProvisional
+        provisionalWordsRemaining = provisional.wordsRemaining
+        if !isProvisional {
+            excludedAyahIndices = []
+        }
+
         switch result.outcome {
         case .frozen:
             return
