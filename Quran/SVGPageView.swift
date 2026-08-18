@@ -115,11 +115,148 @@ struct MushafPageView: NSViewRepresentable {
         // instance carries inline style set on its referenced element.
         // Global (not wrapped in the IIFE below) so later calls from
         // evaluateJavaScript can reach them after the initial load.
+        // Placeholder line - a stand-in "notebook rule" shown under a
+        // stretch of not-yet-recited words, so masked text leaves a
+        // visible slot rather than a gap. One line per masked *run*
+        // spanning consecutive hidden words on a line (bridging the
+        // inter-word gaps so it reads as one continuous rule, not a
+        // dashed one) - a run breaks wherever a revealed/highlighted word
+        // interrupts it. Lines are pooled per md-line-* group and appended
+        // there, so they clone into the <use href="#md-page-inner"> the
+        // same way word glyphs do.
+        //
+        // Geometry (per-word bbox, per-line baseline y) is expensive -
+        // getBBox forces layout - so it's computed once via
+        // __initWordGeometry, called eagerly right after page load
+        // (below) rather than lazily on the first mask call. Doing it
+        // lazily meant the *first* recite tap paid for that layout pass
+        // synchronously, which is what made the very first word-hide feel
+        // slow to catch up.
+        // Each md-line-* group interleaves md-word-* glyphs with
+        // md-aya-mark-* ornaments (the circular ayah-number markers) as
+        // plain siblings, in reading order. `items` merges both, sorted
+        // left-to-right, so a mark - whether it sits between two hidden
+        // words or right at a line's outer edge - always breaks a run
+        // instead of being invisible to it. That both keeps the rule from
+        // being drawn under a marker's ornament and stops a run from
+        // being clipped short of the marker's true edge (a run bounded by
+        // word boxes alone would fall short of a line's real start/end
+        // whenever the outermost item on that side is a marker, not a
+        // word - that was the "line doesn't start at the true edge" bug).
+        var __wordLines = null; // [{ lineEl, items: [{kind, id?, x, right}], y, strokeWidth, pool: [line] }]
+        // The page's outer text-column margins - every fully-justified
+        // line's outermost ink should reach both, but per-line/per-word
+        // bboxes wobble by a pixel or two depending on which glyph or
+        // ornament happens to sit at the edge (kashida stretching isn't
+        // pixel-identical letter to letter). Snapping each line's
+        // outermost run to this shared margin - only when it's already
+        // close, see __edgeSnapTolerance below - is what makes a fully
+        // masked line "start under the first word" instead of stopping a
+        // hair short of it.
+        var __columnLeft = null;
+        var __columnRight = null;
+
+        function __initWordGeometry() {
+            if (__wordLines) return;
+            __wordLines = [];
+            var lineEls = document.querySelectorAll('.source [id^="md-line-"]');
+            for (var i = 0; i < lineEls.length; i++) {
+                var lineEl = lineEls[i];
+                var items = [];
+                var children = lineEl.children;
+                for (var c = 0; c < children.length; c++) {
+                    var child = children[c];
+                    if (/^md-word-/.test(child.id)) {
+                        var box = child.getBBox();
+                        items.push({ kind: 'word', id: child.id, x: box.x, right: box.x + box.width });
+                    } else if (/^md-aya-mark-/.test(child.id)) {
+                        var mbox = child.getBBox();
+                        var mpad = mbox.width * 0.15;
+                        items.push({ kind: 'mark', x: mbox.x - mpad, right: mbox.x + mbox.width + mpad });
+                    }
+                }
+                items.sort(function(a, b) { return a.x - b.x; });
+                var lineBox = lineEl.getBBox();
+                __wordLines.push({
+                    lineEl: lineEl,
+                    items: items,
+                    y: lineBox.y + lineBox.height + lineBox.height * 0.06,
+                    strokeWidth: Math.max(lineBox.height * 0.012, 0.4),
+                    pool: []
+                });
+                if (items.length > 0) {
+                    var first = items[0].x;
+                    var last = items[items.length - 1].right;
+                    __columnLeft = (__columnLeft === null) ? first : Math.min(__columnLeft, first);
+                    __columnRight = (__columnRight === null) ? last : Math.max(__columnRight, last);
+                }
+            }
+        }
+
+        function __poolSegment(line, index) {
+            if (line.pool[index]) return line.pool[index];
+            var seg = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+            seg.setAttribute('y1', line.y);
+            seg.setAttribute('y2', line.y);
+            seg.setAttribute('stroke', '#C7C2B8');
+            seg.setAttribute('stroke-opacity', '0.2');
+            seg.setAttribute('stroke-width', line.strokeWidth);
+            seg.setAttribute('stroke-linecap', 'round');
+            seg.style.visibility = 'hidden';
+            line.lineEl.appendChild(seg);
+            line.pool[index] = seg;
+            return seg;
+        }
+
         function __applyWordMask(revealedIds, highlightedIds) {
+            __initWordGeometry();
             var revealedSet = {};
             for (var i = 0; i < revealedIds.length; i++) { revealedSet[revealedIds[i]] = true; }
             var highlightedSet = {};
             for (var h = 0; h < highlightedIds.length; h++) { highlightedSet[highlightedIds[h]] = true; }
+            function isHidden(id) { return !revealedSet[id] && !highlightedSet[id]; }
+            // Only snap to the shared column edge when the line's own
+            // outermost item is already within this tolerance of it -
+            // otherwise this is a genuinely short line (e.g. the last
+            // line of a surah, never fully justified) and should stay as
+            // measured rather than being stretched to the full margin.
+            var edgeSnapTolerance = __columnLeft !== null
+                ? (__columnRight - __columnLeft) * 0.15
+                : 0;
+
+            for (var li = 0; li < __wordLines.length; li++) {
+                var line = __wordLines[li];
+                var n = line.items.length;
+                var used = 0;
+                var runStart = null, runEnd = null;
+                for (var k = 0; k < n; k++) {
+                    var item = line.items[k];
+                    if (item.kind === 'word' && isHidden(item.id)) {
+                        if (runStart === null) {
+                            runStart = (k === 0 && item.x - __columnLeft < edgeSnapTolerance)
+                                ? __columnLeft : item.x;
+                        }
+                        runEnd = (k === n - 1 && __columnRight - item.right < edgeSnapTolerance)
+                            ? __columnRight : item.right;
+                    } else if (runStart !== null) {
+                        var seg = __poolSegment(line, used++);
+                        seg.setAttribute('x1', runStart);
+                        seg.setAttribute('x2', runEnd);
+                        seg.style.visibility = 'visible';
+                        runStart = null;
+                    }
+                }
+                if (runStart !== null) {
+                    var lastSeg = __poolSegment(line, used++);
+                    lastSeg.setAttribute('x1', runStart);
+                    lastSeg.setAttribute('x2', runEnd);
+                    lastSeg.style.visibility = 'visible';
+                }
+                for (var p = used; p < line.pool.length; p++) {
+                    line.pool[p].style.visibility = 'hidden';
+                }
+            }
+
             var all = document.querySelectorAll('.source [id^="md-word-"]');
             for (var j = 0; j < all.length; j++) {
                 var el = all[j];
@@ -139,6 +276,12 @@ struct MushafPageView: NSViewRepresentable {
             for (var i = 0; i < all.length; i++) {
                 all[i].style.visibility = '';
                 all[i].style.fill = '';
+            }
+            if (__wordLines) {
+                for (var li = 0; li < __wordLines.length; li++) {
+                    var pool = __wordLines[li].pool;
+                    for (var p = 0; p < pool.length; p++) pool[p].style.visibility = 'hidden';
+                }
             }
         }
         (function() {
@@ -193,6 +336,7 @@ struct MushafPageView: NSViewRepresentable {
                 hizbHost.style.visibility = 'visible';
             }
         })();
+        __initWordGeometry();
         \(wordMaskJSCall(for: wordDisplayState))
         </script>
         </body></html>
