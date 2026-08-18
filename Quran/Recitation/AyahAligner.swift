@@ -188,30 +188,62 @@ enum AyahAligner {
 
     // MARK: - Identification
 
+    /// Never resolve off fewer than this many observed words, no matter how
+    /// unique the match looks - too little evidence to commit to anything.
+    static let minWordsForIdentification = 3
+    /// The `currentPages` hint is only considered once at least this many
+    /// words have been observed - below this, a tie is left unresolved
+    /// rather than guessed via page context.
+    static let minWordsForPageAssistedResolve = 5
+    /// A tie at the best alignment cost wider than this is refused even if
+    /// `currentPages` would technically narrow it to one - narrowing a
+    /// dozen-plus equally-good candidates down to "exactly one is on this
+    /// page" is closer to a coin flip than real disambiguation.
+    static let maxPageAssistedTieSize = 5
+    /// Resolutions reached with fewer than this many observed words are
+    /// reported as provisional (see `IdentificationResult.isProvisional`),
+    /// regardless of whether they needed the page hint - short of this,
+    /// even a textually unique match is treated as needing verification.
+    static let solidEvidenceWordCount = 8
+
     struct IdentificationResult {
         let ayahIndex: Int
         /// Flat-word index this resolves to - the new `confirmedPosition`.
         let flatPosition: Int
+        /// True when this resolution was reached off fewer than
+        /// `solidEvidenceWordCount` observed words - callers should treat it
+        /// as tentative until a few more words track cleanly (see
+        /// `provisionalUpdate`), rather than fully trusting it outright.
+        let isProvisional: Bool
     }
 
     /// Whole-Quran identification: a cheap per-ayah word-overlap prefilter,
     /// then precise alignment against each surviving candidate's word
     /// window (widened a few words into the next ayah so a tail straddling
-    /// an ayah boundary before anything resolves still works). Resolves on
-    /// a unique candidate, or a unique candidate after narrowing to
-    /// `currentPages`; otherwise returns nil ("still searching" -
+    /// an ayah boundary before anything resolves still works), ranked by
+    /// alignment cost (edit distance) rather than treating every candidate
+    /// that merely passes as equally valid. Resolves outright on a uniquely
+    /// best-cost candidate; on a genuine tie at the best cost, narrows using
+    /// `currentPages` only once enough words have been heard and the tie
+    /// isn't too wide (see `minWordsForPageAssistedResolve`/
+    /// `maxPageAssistedTieSize`). Otherwise returns nil ("still searching" -
     /// deliberate on genuine ambiguity, e.g. a bare repeated refrain,
-    /// rather than guessing).
-    static func identifyAyah(tailWords: [String], database: QuranDatabase, currentPages: ClosedRange<Int>?) -> IdentificationResult? {
-        guard !tailWords.isEmpty else { return nil }
+    /// rather than guessing). `excluding` skips ayahs already rejected by a
+    /// prior identification attempt this session (see `RecitationSession`),
+    /// so a single mis-transcribed word can't cause the same wrong ayah to
+    /// be re-picked immediately after being reopened.
+    static func identifyAyah(
+        tailWords: [String], database: QuranDatabase, currentPages: ClosedRange<Int>?, excluding: Set<Int> = []
+    ) -> IdentificationResult? {
+        guard tailWords.count >= minWordsForIdentification else { return nil }
 
         let tailSet = Set(tailWords)
         let minOverlap = max(0, tailWords.count - maxConsecutiveErrors)
 
-        struct Candidate { let ayahIndex: Int; let flatPosition: Int }
+        struct Candidate { let ayahIndex: Int; let flatPosition: Int; let cost: Int }
         var candidates: [Candidate] = []
         for (ayahIndex, ayah) in database.ayahs.enumerated() {
-            guard !ayah.groundTruthSkeletonWords.isEmpty else { continue }
+            guard !ayah.groundTruthSkeletonWords.isEmpty, !excluding.contains(ayahIndex) else { continue }
             let start = database.flatStart(ofAyahIndex: ayahIndex)
             // Widened a few words into the next ayah so a tail straddling an
             // ayah boundary (or a single-word ayah, e.g. a muqata'at opener
@@ -227,20 +259,53 @@ enum AyahAligner {
             guard overlap >= min(minOverlap, window.count) else { continue }
 
             guard let alignment = align(observed: tailWords, candidate: window, freeLeadingCandidate: true) else { continue }
-            candidates.append(Candidate(ayahIndex: ayahIndex, flatPosition: start + alignment.candidateStart))
+            candidates.append(Candidate(ayahIndex: ayahIndex, flatPosition: start + alignment.candidateStart, cost: alignment.cost))
         }
 
         guard !candidates.isEmpty else { return nil }
-        if candidates.count == 1 {
-            return IdentificationResult(ayahIndex: candidates[0].ayahIndex, flatPosition: candidates[0].flatPosition)
+        let isProvisional = tailWords.count < solidEvidenceWordCount
+
+        let minCost = candidates.map(\.cost).min()!
+        let bestTier = candidates.filter { $0.cost == minCost }
+        if bestTier.count == 1 {
+            return IdentificationResult(ayahIndex: bestTier[0].ayahIndex, flatPosition: bestTier[0].flatPosition, isProvisional: isProvisional)
         }
-        guard let pages = currentPages else { return nil }
-        let onPage = candidates.filter { c in
+
+        guard tailWords.count >= minWordsForPageAssistedResolve, bestTier.count <= maxPageAssistedTieSize,
+              let pages = currentPages
+        else { return nil }
+        let onPage = bestTier.filter { c in
             let a = database.ayahs[c.ayahIndex]
             return a.startPage <= pages.upperBound && a.endPage >= pages.lowerBound
         }
         guard onPage.count == 1 else { return nil }
-        return IdentificationResult(ayahIndex: onPage[0].ayahIndex, flatPosition: onPage[0].flatPosition)
+        return IdentificationResult(ayahIndex: onPage[0].ayahIndex, flatPosition: onPage[0].flatPosition, isProvisional: isProvisional)
+    }
+
+    // MARK: - Provisional-state bookkeeping
+
+    /// How many further words (matches or tolerated substitutions - both
+    /// mean forward alignment held, which is the actual signal a provisional
+    /// identification is correct) must track cleanly before a provisional
+    /// result is promoted to confirmed.
+    static let provisionalVerificationWordCount = 4
+
+    /// Given the previous provisional state and this tick's `advance`
+    /// outcome, returns the next state. A freeze while still provisional
+    /// signals "this early guess looks wrong" - the caller reopens
+    /// identification from scratch (excluding the rejected ayah) rather
+    /// than sitting frozen indefinitely. Enough successfully-tracked words
+    /// instead promotes provisional -> confirmed.
+    static func provisionalUpdate(
+        isProvisional: Bool, wordsRemaining: Int, outcome: AdvanceOutcome, commitSteps: [(flatIndex: Int, step: Step, tashkeelOK: Bool?)]
+    ) -> (isProvisional: Bool, wordsRemaining: Int, shouldReopen: Bool) {
+        guard isProvisional else { return (false, 0, false) }
+        if outcome == .frozen {
+            return (true, wordsRemaining, true)
+        }
+        let tracked = commitSteps.filter { $0.step.kind == .match || $0.step.kind == .substitute }.count
+        let remaining = max(0, wordsRemaining - tracked)
+        return (remaining > 0, remaining, false)
     }
 
     // MARK: - Tracking

@@ -96,7 +96,9 @@ final class AyahAlignerTests: XCTestCase {
     /// A genuinely repeated ayah (found dynamically, on two cleanly
     /// page-separated occurrences so this tracks real data instead of an
     /// assumption that could silently stop holding) stays ambiguous with no
-    /// page hint, and resolves once a page hint narrows it to one occurrence.
+    /// page hint, and resolves once a page hint narrows it to one occurrence
+    /// - marked `isProvisional` appropriately, and not resolved at all if
+    /// too few words have been heard yet.
     func testAmbiguousRepeatedAyahStaysAmbiguousUntilDisambiguated() {
         var groups: [String: [Int]] = [:]
         for (idx, a) in db.ayahs.enumerated() where a.groundTruthSkeletonWords.count >= 5 {
@@ -125,10 +127,105 @@ final class AyahAlignerTests: XCTestCase {
             let target = db.ayahs[indices[0]]
             let resolved = AyahAligner.identifyAyah(tailWords: tail, database: db, currentPages: target.startPage...target.endPage)
             if resolved?.ayahIndex == indices[0] {
+                XCTAssertEqual(
+                    resolved?.isProvisional, tail.count < AyahAligner.solidEvidenceWordCount,
+                    "isProvisional should reflect whether enough words have been heard"
+                )
+                let shortTail = Array(tail.prefix(AyahAligner.minWordsForPageAssistedResolve - 1))
+                let shortResult = AyahAligner.identifyAyah(tailWords: shortTail, database: db, currentPages: target.startPage...target.endPage)
+                XCTAssertNil(shortResult, "page hint should not be trusted below minWordsForPageAssistedResolve")
                 return // found a clean example exercising both halves of the behavior
             }
         }
         XCTFail("no repeated-ayah pair found where a page hint alone disambiguates - data may have changed")
+    }
+
+    /// A tie wider than `maxPageAssistedTieSize` must not be resolved by a
+    /// page hint, even when exactly one occurrence happens to be on that
+    /// page - narrowing a dozen-plus equally-good candidates down to one via
+    /// page alone is too weak to trust. The Ar-Rahman refrain (or whichever
+    /// ayah repeats most in the current data) is the natural real-world case.
+    func testPageHintRefusedWhenTieTooWide() {
+        var groups: [String: [Int]] = [:]
+        for (idx, a) in db.ayahs.enumerated() where a.groundTruthSkeletonWords.count >= 5 {
+            groups[a.groundTruthSkeletonWords.joined(separator: " "), default: []].append(idx)
+        }
+        guard let wideGroup = groups.values.first(where: { $0.count > AyahAligner.maxPageAssistedTieSize }) else {
+            XCTFail("no ayah repeated more than maxPageAssistedTieSize times found - data may have changed")
+            return
+        }
+        let target = db.ayahs[wideGroup[0]]
+        let tail = target.groundTruthSkeletonWords
+        let result = AyahAligner.identifyAyah(tailWords: tail, database: db, currentPages: target.startPage...target.endPage)
+        XCTAssertNil(result, "a page hint should not resolve a tie wider than maxPageAssistedTieSize")
+    }
+
+    /// A candidate that shares its opening with another ayah, but strictly
+    /// diverges within tolerance once more words are heard, must resolve to
+    /// the textually-correct one outright - even when the page hint points
+    /// at the other, worse-cost candidate. This is the core fix: page
+    /// context must never override better textual evidence.
+    func testCostRankingOverridesPageHint() {
+        var groups: [String: [Int]] = [:]
+        for (idx, a) in db.ayahs.enumerated() where a.groundTruthSkeletonWords.count >= 5 {
+            groups[a.groundTruthSkeletonWords.joined(separator: " "), default: []].append(idx)
+        }
+        let cleanPairs = groups.values.filter { indices in
+            guard indices.count == 2 else { return false }
+            let a = db.ayahs[indices[0]], b = db.ayahs[indices[1]]
+            return a.endPage < b.startPage || b.endPage < a.startPage
+        }
+        guard !cleanPairs.isEmpty else {
+            XCTFail("no cleanly page-separated repeated ayah found - data may have changed")
+            return
+        }
+
+        // A genuinely repeated ayah, extended a couple of words into
+        // whatever actually comes next after *this* occurrence. The two
+        // occurrences' real continuations differ, which breaks what would
+        // otherwise be a dead tie: the extended tail costs 0 against the
+        // correct occurrence but 1-2 against the other (its continuation
+        // doesn't match the extra words) - so cost ranking alone should
+        // resolve it, even with a page hint actively pointing at the
+        // *other*, worse-cost, occurrence. The old "any candidate + page
+        // tiebreak" logic would have wrongly trusted that page hint here.
+        for indices in cleanPairs {
+            let correctIdx = indices[0]
+            let wrongIdx = indices[1]
+            let correctStart = flatStart(db.ayahs[correctIdx].surah, db.ayahs[correctIdx].ayahNumber)
+            let ownCount = db.ayahs[correctIdx].groundTruthSkeletonWords.count
+            let extendEnd = min(db.flatWords.count, correctStart + ownCount + 2)
+            let tail = db.flatWords[correctStart..<extendEnd].map(\.skeleton)
+            guard tail.count == ownCount + 2 else { continue } // need real room to extend into
+
+            let wrong = db.ayahs[wrongIdx]
+            let result = AyahAligner.identifyAyah(tailWords: tail, database: db, currentPages: wrong.startPage...wrong.endPage)
+            if result?.ayahIndex == correctIdx {
+                return // cost ranking alone resolved it, despite a page hint pointing at `wrong`
+            }
+        }
+        XCTFail("no repeated-ayah pair found where extending past the duplicate breaks the tie by cost - data may have changed")
+    }
+
+    /// Never resolves off fewer than `minWordsForIdentification` words, no
+    /// matter how strong a page hint is available.
+    func testIdentificationRequiresMinimumWords() {
+        let target = ayah(2, 255)
+        let shortTail = Array(target.groundTruthSkeletonWords.prefix(AyahAligner.minWordsForIdentification - 1))
+        let result = AyahAligner.identifyAyah(tailWords: shortTail, database: db, currentPages: target.startPage...target.endPage)
+        XCTAssertNil(result, "must not resolve below minWordsForIdentification")
+    }
+
+    /// `excluding` keeps a previously-rejected ayah from being re-picked,
+    /// even as the otherwise-unique best-cost match.
+    func testExcludingSkipsRejectedCandidate() {
+        let target = ayah(2, 255)
+        let tail = Array(target.groundTruthSkeletonWords.suffix(4))
+        let withoutExclusion = AyahAligner.identifyAyah(tailWords: tail, database: db, currentPages: nil)
+        XCTAssertEqual(withoutExclusion?.ayahIndex, ayahIndex(2, 255))
+
+        let withExclusion = AyahAligner.identifyAyah(tailWords: tail, database: db, currentPages: nil, excluding: [ayahIndex(2, 255)])
+        XCTAssertNotEqual(withExclusion?.ayahIndex, ayahIndex(2, 255), "excluded ayah must never be returned")
     }
 
     // MARK: - Tracking
@@ -241,6 +338,37 @@ final class AyahAlignerTests: XCTestCase {
         }
         let crossedIntoB = result.commitSteps.contains { db.flatWords[$0.flatIndex].ayahIndex == ayahIndex(2, 2) }
         XCTAssertTrue(crossedIntoB, "should flow into the next ayah with no special transition needed")
+    }
+
+    // MARK: - Provisional-state bookkeeping
+
+    func testProvisionalUpdateTransitions() {
+        // Not provisional -> passthrough regardless of outcome.
+        let passthrough = AyahAligner.provisionalUpdate(isProvisional: false, wordsRemaining: 0, outcome: .forward, commitSteps: [])
+        XCTAssertFalse(passthrough.isProvisional)
+        XCTAssertFalse(passthrough.shouldReopen)
+
+        // Provisional + frozen -> reopen, not just sit frozen.
+        let reopened = AyahAligner.provisionalUpdate(isProvisional: true, wordsRemaining: 3, outcome: .frozen, commitSteps: [])
+        XCTAssertTrue(reopened.shouldReopen)
+
+        // Provisional + enough matches -> confirmed.
+        let matchSteps: [(flatIndex: Int, step: AyahAligner.Step, tashkeelOK: Bool?)] = (0..<4).map {
+            (flatIndex: $0, step: AyahAligner.Step(kind: .match, observedIndex: $0, candidateIndex: $0), tashkeelOK: true)
+        }
+        let confirmed = AyahAligner.provisionalUpdate(isProvisional: true, wordsRemaining: 4, outcome: .forward, commitSteps: matchSteps)
+        XCTAssertFalse(confirmed.isProvisional)
+        XCTAssertFalse(confirmed.shouldReopen)
+
+        // A substitute counts toward verification too - forward alignment
+        // holding at all is the real signal, not word-level cleanliness.
+        let subSteps: [(flatIndex: Int, step: AyahAligner.Step, tashkeelOK: Bool?)] = [
+            (flatIndex: 0, step: AyahAligner.Step(kind: .substitute, observedIndex: 0, candidateIndex: 0), tashkeelOK: false)
+        ]
+        let stillProvisional = AyahAligner.provisionalUpdate(isProvisional: true, wordsRemaining: 4, outcome: .forward, commitSteps: subSteps)
+        XCTAssertTrue(stillProvisional.isProvisional)
+        XCTAssertEqual(stillProvisional.wordsRemaining, 3)
+        XCTAssertFalse(stillProvisional.shouldReopen)
     }
 
     // MARK: - Verification leniency
