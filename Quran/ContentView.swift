@@ -11,7 +11,7 @@ import SwiftUI
 /// snaps back to the current spread, based on drag distance and flick
 /// velocity - see DragPhysics below.
 struct ContentView: View {
-    @State private var rightPage = 1
+    @State private var rightPage: Int
     @State private var dragOffset: CGFloat = 0
     /// Cached from the GeometryReader for use by keyboard-triggered
     /// page turns, which have no geometry of their own to read.
@@ -22,7 +22,7 @@ struct ContentView: View {
     /// from `rightPage`, so paging several spreads out and back still
     /// finds everything in between already loaded - see
     /// `registerVisit(_:)`.
-    @State private var mountedRightPages: [Int] = [1]
+    @State private var mountedRightPages: [Int]
     @State private var recitationBar = RecitationBarState()
     @State private var recitationSession: RecitationSession?
     @State private var recitationProgress = RecitationProgress()
@@ -41,6 +41,24 @@ struct ContentView: View {
     private let store = QuranPageStore()
 
     private let pageBackground = Color(hex: "242322")
+    private static let lastReadPageKey = "lastReadPage"
+
+    /// Restores `rightPage` to wherever the user last left off, falling
+    /// back to page 1 if nothing was saved yet or the saved value is no
+    /// longer valid (not odd, or no matching SVG - e.g. after a mushaf
+    /// asset change).
+    init() {
+        let store = QuranPageStore()
+        let saved = UserDefaults.standard.object(forKey: Self.lastReadPageKey) as? Int
+        let restored: Int
+        if let saved, saved % 2 == 1, store.svgURL(for: saved) != nil {
+            restored = saved
+        } else {
+            restored = 1
+        }
+        _rightPage = State(initialValue: restored)
+        _mountedRightPages = State(initialValue: [restored])
+    }
 
     private enum DragPhysics {
         static let commitFraction: CGFloat = 0.35
@@ -52,8 +70,14 @@ struct ContentView: View {
         /// where there's no neighbor to reveal.
         static let reboundFactor: CGFloat = 0.3
         static let reboundCap: CGFloat = 80
-        static let commitSpring = Animation.spring(response: 0.32, dampingFraction: 0.88)
-        static let snapBackSpring = Animation.spring(response: 0.28, dampingFraction: 0.82)
+        static let commitSpring = Animation.spring(
+            response: 0.32,
+            dampingFraction: 0.88
+        )
+        static let snapBackSpring = Animation.spring(
+            response: 0.28,
+            dampingFraction: 0.82
+        )
     }
 
     var body: some View {
@@ -74,7 +98,12 @@ struct ContentView: View {
                 // (toward higher page numbers) moves content leftward.
                 ForEach(visibleRightPages, id: \.self) { right in
                     spreadView(for: right)
-                        .offset(x: xOffset(for: right, containerWidth: geo.size.width))
+                        .offset(
+                            x: xOffset(
+                                for: right,
+                                containerWidth: geo.size.width
+                            )
+                        )
                 }
                 .opacity(spreadOpacity)
 
@@ -93,7 +122,9 @@ struct ContentView: View {
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .onAppear { containerWidth = geo.size.width }
-            .onChange(of: geo.size.width) { _, newWidth in containerWidth = newWidth }
+            .onChange(of: geo.size.width) { _, newWidth in
+                containerWidth = newWidth
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
@@ -116,8 +147,17 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { handleKeyDown($0) }
-            preload(ahead: rightPage, direction: .forward, count: preloadLookahead)
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+                handleKeyDown($0)
+            }
+            preload(
+                ahead: rightPage,
+                direction: .forward,
+                count: preloadLookahead
+            )
+        }
+        .onChange(of: rightPage) { _, newValue in
+            UserDefaults.standard.set(newValue, forKey: Self.lastReadPageKey)
         }
     }
 
@@ -130,7 +170,10 @@ struct ContentView: View {
     /// where its content should be while the reload's JS is still
     /// repositioning the crops.
     private var visibleRightPages: [Int] {
-        let required = [adjacentRightPage(before: rightPage), rightPage, adjacentRightPage(after: rightPage)].compactMap { $0 }
+        let required = [
+            adjacentRightPage(before: rightPage), rightPage,
+            adjacentRightPage(after: rightPage),
+        ].compactMap { $0 }
         return Set(required).union(mountedRightPages).sorted()
     }
 
@@ -141,9 +184,18 @@ struct ContentView: View {
     private func registerVisit(_ right: Int) {
         mountedRightPages.removeAll { $0 == right }
         mountedRightPages.append(right)
-        let required = Set([adjacentRightPage(before: right), right, adjacentRightPage(after: right)].compactMap { $0 })
+        let required = Set(
+            [
+                adjacentRightPage(before: right), right,
+                adjacentRightPage(after: right),
+            ].compactMap { $0 }
+        )
         while mountedRightPages.count > maxMountedSpreads {
-            guard let evictIndex = mountedRightPages.firstIndex(where: { !required.contains($0) }) else { break }
+            guard
+                let evictIndex = mountedRightPages.firstIndex(where: {
+                    !required.contains($0)
+                })
+            else { break }
             mountedRightPages.remove(at: evictIndex)
         }
     }
@@ -155,10 +207,17 @@ struct ContentView: View {
     /// paging the same way, those spreads are already loaded by the
     /// time they're reached; if they reverse instead, the speculative
     /// entries just age out of the recency cache like anything else.
-    private func preload(ahead right: Int, direction: SpreadDirection, count: Int) {
+    private func preload(
+        ahead right: Int,
+        direction: SpreadDirection,
+        count: Int
+    ) {
         var cursor = right
         for _ in 0..<count {
-            let next = direction == .forward ? adjacentRightPage(after: cursor) : adjacentRightPage(before: cursor)
+            let next =
+                direction == .forward
+                ? adjacentRightPage(after: cursor)
+                : adjacentRightPage(before: cursor)
             guard let next else { break }
             registerVisit(next)
             cursor = next
@@ -187,8 +246,12 @@ struct ContentView: View {
     @ViewBuilder
     private func pageView(for page: Int) -> some View {
         if let url = store.svgURL(for: page) {
-            MushafPageView(svgURL: url, isOpenerPage: page <= 2, wordDisplayState: wordDisplayState(for: page))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            MushafPageView(
+                svgURL: url,
+                isOpenerPage: page <= 2,
+                wordDisplayState: wordDisplayState(for: page)
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             pageBackground
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -211,7 +274,9 @@ struct ContentView: View {
     /// doesn't: a page already passed via forward progress, then
     /// backtracked behind, which is now numerically *after* the active page
     /// but must still stay revealed rather than reverting to hidden.
-    private func wordDisplayState(for page: Int) -> MushafPageView.WordDisplayState {
+    private func wordDisplayState(for page: Int)
+        -> MushafPageView.WordDisplayState
+    {
         guard recitationProgress.isActive else { return .unmasked }
         if recitationProgress.activePage == page {
             return .masked(
@@ -222,7 +287,8 @@ struct ContentView: View {
         if let active = recitationProgress.activePage, page < active {
             return .unmasked
         }
-        if let highest = recitationProgress.highestReachedPage, page <= highest {
+        if let highest = recitationProgress.highestReachedPage, page <= highest
+        {
             return .unmasked
         }
         return .masked(revealedIDs: [], highlightedIDs: [])
@@ -265,14 +331,26 @@ struct ContentView: View {
             .onEnded { value in
                 let translation = value.translation.width
                 let predicted = value.predictedEndTranslation.width
-                let commitThreshold = min(max(width * DragPhysics.commitFraction, DragPhysics.commitFloor), DragPhysics.commitCeiling)
-                let commits = abs(translation) >= commitThreshold
-                    || (abs(predicted) >= width * DragPhysics.flickPredictedFraction
+                let commitThreshold = min(
+                    max(
+                        width * DragPhysics.commitFraction,
+                        DragPhysics.commitFloor
+                    ),
+                    DragPhysics.commitCeiling
+                )
+                let commits =
+                    abs(translation) >= commitThreshold
+                    || (abs(predicted) >= width
+                        * DragPhysics.flickPredictedFraction
                         && abs(translation) >= DragPhysics.flickMinRealDrag)
 
-                if translation < 0, commits, adjacentRightPage(before: rightPage) != nil {
+                if translation < 0, commits,
+                    adjacentRightPage(before: rightPage) != nil
+                {
                     commit(toward: .backward, width: width)
-                } else if translation > 0, commits, adjacentRightPage(after: rightPage) != nil {
+                } else if translation > 0, commits,
+                    adjacentRightPage(after: rightPage) != nil
+                {
                     commit(toward: .forward, width: width)
                 } else {
                     snapBack()
@@ -282,10 +360,16 @@ struct ContentView: View {
 
     private func resistedOffset(for translation: CGFloat) -> CGFloat {
         if translation > 0, adjacentRightPage(after: rightPage) == nil {
-            return min(translation * DragPhysics.reboundFactor, DragPhysics.reboundCap)
+            return min(
+                translation * DragPhysics.reboundFactor,
+                DragPhysics.reboundCap
+            )
         }
         if translation < 0, adjacentRightPage(before: rightPage) == nil {
-            return max(translation * DragPhysics.reboundFactor, -DragPhysics.reboundCap)
+            return max(
+                translation * DragPhysics.reboundFactor,
+                -DragPhysics.reboundCap
+            )
         }
         return translation
     }
@@ -303,7 +387,9 @@ struct ContentView: View {
     /// stomp an in-progress drag's offset out from under it.
     private func commit(toward direction: SpreadDirection, width: CGFloat) {
         dragOffset += direction == .forward ? -width : width
-        rightPage = direction == .forward ? nextRightPage(rightPage) : previousRightPage(rightPage)
+        rightPage =
+            direction == .forward
+            ? nextRightPage(rightPage) : previousRightPage(rightPage)
         registerVisit(rightPage)
         preload(ahead: rightPage, direction: direction, count: preloadLookahead)
         withAnimation(DragPhysics.commitSpring) {
@@ -327,8 +413,12 @@ struct ContentView: View {
         return target != right ? target : nil
     }
 
-    private func nextRightPage(_ right: Int) -> Int { adjacentRightPage(after: right) ?? right }
-    private func previousRightPage(_ right: Int) -> Int { adjacentRightPage(before: right) ?? right }
+    private func nextRightPage(_ right: Int) -> Int {
+        adjacentRightPage(after: right) ?? right
+    }
+    private func previousRightPage(_ right: Int) -> Int {
+        adjacentRightPage(before: right) ?? right
+    }
 
     private func oddPageAtOrBelow(_ page: Int) -> Int {
         page % 2 == 0 ? page - 1 : page
@@ -336,11 +426,15 @@ struct ContentView: View {
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
         switch event.keyCode {
-        case 123: // left arrow -> forward in reading order (right-to-left)
-            if adjacentRightPage(after: rightPage) != nil { commit(toward: .forward, width: containerWidth) }
+        case 123:  // left arrow -> forward in reading order (right-to-left)
+            if adjacentRightPage(after: rightPage) != nil {
+                commit(toward: .forward, width: containerWidth)
+            }
             return nil
-        case 124: // right arrow -> backward in reading order
-            if adjacentRightPage(before: rightPage) != nil { commit(toward: .backward, width: containerWidth) }
+        case 124:  // right arrow -> backward in reading order
+            if adjacentRightPage(before: rightPage) != nil {
+                commit(toward: .backward, width: containerWidth)
+            }
             return nil
         default:
             return event

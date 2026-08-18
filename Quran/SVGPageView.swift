@@ -88,7 +88,7 @@ struct MushafPageView: NSViewRepresentable {
         .header-row svg { width: 160px; height: 30px; }
         .content-row { flex: 1 1 auto; min-height: 0; position: relative; }
         #crop-content { display: block; width: 100%; height: 100%; }
-        #crop-hizbMarker { position: absolute; width: 90px; height: 90px; }
+        #crop-hizbMarker { position: absolute; width: 70px; height: 70px; }
         .footer-row { flex: 0 0 14px; display: flex; align-items: center; justify-content: center; padding-bottom: 6px; box-sizing: border-box; }
         .footer-row svg { width: 22px; height: 14px; }
         .crop { fill: #FFFFFF; visibility: hidden; }
