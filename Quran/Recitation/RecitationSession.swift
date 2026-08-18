@@ -283,7 +283,7 @@ nonisolated final class RecitationSession {
                 continue // position-based leniency (plan's requirement 5) - never scored
             }
 
-            let heard = step.observedIndex.flatMap { $0 < observedTashkeel.count ? observedTashkeel[$0] : nil }
+            let heard = AyahAligner.heardTashkeel(for: step, observedTashkeel: observedTashkeel)
 
             switch step.kind {
             case .match, .substitute:

@@ -32,6 +32,13 @@ func normalizeArabicSkeleton(_ s: String) -> String {
             continue
         case 0x0621, 0x0622, 0x0623, 0x0624, 0x0625, 0x0626, 0x0671:
             result.append(Unicode.Scalar(0x0627)!)
+        case 0x0629:
+            // Ta marbuta folded to ta - connected-state ة is pronounced
+            // /t/, identical to ت (only a paused/isolated ة sounds like
+            // /h/ or is silent), so the ASR frequently spells it with the
+            // plain-ta letter. Same-phoneme treatment as the hamza fold
+            // above, not a real word difference.
+            result.append(Unicode.Scalar(0x062A)!)
         default:
             result.append(scalar)
         }
@@ -82,5 +89,17 @@ func normalizeGroundTruthTashkeel(_ s: String) -> String {
         .replacingOccurrences(of: " +", with: " ", options: .regularExpression)
         .trimmingCharacters(in: .whitespaces)
     return collapsed.precomposedStringWithCanonicalMapping
+}
+
+/// Folds ة (ta marbuta) to ت, for *tashkeel-correctness comparison only*
+/// (see `AyahAligner.buildResult`) - never applied to the ground truth
+/// string actually displayed/printed, which must keep the Uthmani/imlaei
+/// ة spelling. Same phonetic-equivalence rationale as the skeleton-level
+/// fold in `normalizeArabicSkeleton`: connected-state ة sounds like /t/,
+/// so a reciter saying e.g. "نِعْمَةَ اللَّهِ" correctly is legitimately
+/// transcribed by the ASR as "نِعْمَتَ" - a spelling difference, not a
+/// wrong diacritic.
+func foldTaMarbutaForComparison(_ s: String) -> String {
+    String(String.UnicodeScalarView(s.unicodeScalars.map { $0.value == 0x0629 ? Unicode.Scalar(0x062A)! : $0 }))
 }
 

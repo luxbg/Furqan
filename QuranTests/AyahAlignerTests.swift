@@ -207,13 +207,23 @@ final class AyahAlignerTests: XCTestCase {
         XCTFail("no repeated-ayah pair found where extending past the duplicate breaks the tie by cost - data may have changed")
     }
 
-    /// Never resolves off fewer than `minWordsForIdentification` words, no
-    /// matter how strong a page hint is available.
-    func testIdentificationRequiresMinimumWords() {
-        let target = ayah(2, 255)
-        let shortTail = Array(target.groundTruthSkeletonWords.prefix(AyahAligner.minWordsForIdentification - 1))
-        let result = AyahAligner.identifyAyah(tailWords: shortTail, database: db, currentPages: target.startPage...target.endPage)
-        XCTAssertNil(result, "must not resolve below minWordsForIdentification")
+    /// A word that's genuinely unique across the whole Quran (e.g. "تتجافى",
+    /// 32:16) must resolve immediately off a single observed word - a cost-0
+    /// match with every other candidate strictly worse is real evidence
+    /// regardless of tail length, so there must be no blanket minimum-word
+    /// gate blocking it. Found dynamically so this tracks real data.
+    func testUniqueSingleWordResolvesImmediately() {
+        var counts: [String: Int] = [:]
+        for w in db.flatWords { counts[w.skeleton, default: 0] += 1 }
+        guard let uniqueWord = db.flatWords.first(where: { counts[$0.skeleton] == 1 }) else {
+            XCTFail("no globally-unique word found - data may have changed")
+            return
+        }
+        let result = AyahAligner.identifyAyah(tailWords: [uniqueWord.skeleton], database: db, currentPages: nil)
+        XCTAssertEqual(
+            result?.ayahIndex, uniqueWord.ayahIndex,
+            "a globally-unique word should resolve immediately off a single observed word"
+        )
     }
 
     /// `excluding` keeps a previously-rejected ayah from being re-picked,
@@ -338,6 +348,77 @@ final class AyahAlignerTests: XCTestCase {
         }
         let crossedIntoB = result.commitSteps.contains { db.flatWords[$0.flatIndex].ayahIndex == ayahIndex(2, 2) }
         XCTAssertTrue(crossedIntoB, "should flow into the next ayah with no special transition needed")
+    }
+
+    // MARK: - Tashkeel/segmentation equivalence
+
+    /// A ta marbuta (ة) pronounced in construct state sounds identical to a
+    /// plain ta (ت) - "نِعْمَةَ اللَّهِ" (33:9, word 6/22) is correctly
+    /// recited with a /t/ sound, which the ASR spells "نِعْمَتَ". Must
+    /// resolve as a clean match with correct tashkeel, not a substituted or
+    /// wrong-tashkeel word.
+    func testTaMarbutaConnectedPronunciationCountsAsCorrect() {
+        let start = flatStart(33, 9)
+        let ayahA = ayah(33, 9)
+        let wordIndex = 5 // "نِعْمَةَ"
+
+        // Simulate the ASR spelling the connected-state ة as ت - the raw
+        // text it would actually emit for this word.
+        let rawObservedWord = foldTaMarbutaForComparison(ayahA.groundTruthWords[wordIndex])
+        var observed = ayahA.groundTruthSkeletonWords
+        var observedTashkeel = ayahA.groundTruthWords
+        observed[wordIndex] = normalizeArabicSkeleton(rawObservedWord)
+        observedTashkeel[wordIndex] = rawObservedWord
+
+        let result = AyahAligner.advance(
+            observed: observed, observedTashkeel: observedTashkeel, confirmedPosition: start, floor: start, database: db
+        )
+        guard case .forward = result.outcome else {
+            return XCTFail("expected forward progress, got \(result.outcome)")
+        }
+        let step = result.commitSteps.first { $0.flatIndex == start + wordIndex }
+        XCTAssertEqual(step?.step.kind, .match, "connected ta marbuta must align as the same word, not a substitution")
+        XCTAssertEqual(step?.tashkeelOK, true, "connected-state ة sounding like ت is correct recitation, not wrong tashkeel")
+    }
+
+    /// The ASR sometimes splits a single ground-truth word into two
+    /// transcribed tokens (e.g. "إِنَّ" + "مَا" for "إِنَّمَا", 2:11 word
+    /// 9/11). Must resolve as one merged match at the right position, not a
+    /// substitution/extra pair, and must not throw off the following word's
+    /// position.
+    func testSplitWordMergesIntoSingleCandidateMatch() {
+        let start = flatStart(2, 11)
+        let ayahA = ayah(2, 11)
+        let wordIndex = 8 // "إِنَّمَا"
+
+        // Split the real ground-truth word right before its meem, so the
+        // two halves are guaranteed to skeleton-fold and tashkeel-concat
+        // back to exactly the original (no hand-typed diacritics to get
+        // subtly wrong).
+        let word = ayahA.groundTruthWords[wordIndex]
+        let scalars = Array(word.unicodeScalars)
+        guard let meemIndex = scalars.firstIndex(where: { $0.value == 0x0645 }) else {
+            return XCTFail("expected ayah word to contain a meem to split on")
+        }
+        let firstHalf = String(String.UnicodeScalarView(Array(scalars[..<meemIndex])))
+        let secondHalf = String(String.UnicodeScalarView(Array(scalars[meemIndex...])))
+
+        var observed = ayahA.groundTruthSkeletonWords
+        var observedTashkeel = ayahA.groundTruthWords
+        observed.replaceSubrange(wordIndex...wordIndex, with: [normalizeArabicSkeleton(firstHalf), normalizeArabicSkeleton(secondHalf)])
+        observedTashkeel.replaceSubrange(wordIndex...wordIndex, with: [firstHalf, secondHalf])
+
+        let result = AyahAligner.advance(
+            observed: observed, observedTashkeel: observedTashkeel, confirmedPosition: start, floor: start, database: db
+        )
+        guard case .forward = result.outcome else {
+            return XCTFail("expected forward progress, got \(result.outcome)")
+        }
+        let step = result.commitSteps.first { $0.flatIndex == start + wordIndex }
+        XCTAssertEqual(step?.step.kind, .match, "a word split across two ASR tokens must still resolve as a single match")
+        XCTAssertEqual(step?.tashkeelOK, true)
+        let nextWord = result.commitSteps.first { $0.flatIndex == start + wordIndex + 1 }
+        XCTAssertEqual(nextWord?.step.kind, .match, "the word after the split must not drift off position")
     }
 
     // MARK: - Provisional-state bookkeeping

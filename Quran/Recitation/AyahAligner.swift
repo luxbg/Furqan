@@ -49,6 +49,21 @@ enum AyahAligner {
         /// Index into the `candidate` array passed to `align`, if this step
         /// consumed one (everything except `.extra`).
         let candidateIndex: Int?
+        /// Set only for a `.match` step that resolved by merging two
+        /// consecutive observed tokens whose concatenated skeleton equals
+        /// one candidate word's skeleton - the ASR sometimes splits a
+        /// single ground-truth word into two transcribed tokens (e.g.
+        /// "ان" + "ما" for "انما"). Holds the earlier of the two observed
+        /// indices; `observedIndex` remains the later one. Nil for every
+        /// ordinary step.
+        let mergedObservedIndex: Int?
+
+        init(kind: StepKind, observedIndex: Int?, candidateIndex: Int?, mergedObservedIndex: Int? = nil) {
+            self.kind = kind
+            self.observedIndex = observedIndex
+            self.candidateIndex = candidateIndex
+            self.mergedObservedIndex = mergedObservedIndex
+        }
     }
 
     struct Alignment {
@@ -92,6 +107,9 @@ enum AyahAligner {
             var pi = -1, pj = -1, ps = -1
             var kind: StepKind = .match
             var valid = false
+            /// See `Step.mergedObservedIndex` - set when this transition
+            /// resolved by merging 2 observed tokens into 1 candidate word.
+            var isMerge = false
         }
 
         var dp = Array(repeating: Array(repeating: Array(repeating: inf, count: streakCap + 1), count: m + 1), count: n + 1)
@@ -124,6 +142,23 @@ enum AyahAligner {
                                 dp[i][j][ns] = cost
                                 parent[i][j][ns] = Parent(pi: i - 1, pj: j - 1, ps: ps, kind: .substitute, valid: true)
                             }
+                        }
+                    }
+                }
+                // Merge match: 2 consecutive observed tokens concatenate to
+                // exactly equal 1 candidate word's skeleton - the ASR
+                // sometimes splits a single ground-truth word into two
+                // transcribed tokens (e.g. "ان" + "ما" for "انما"). Treated
+                // like an ordinary match: free, doesn't consume the error
+                // streak, since it's a correctly-recited word that just got
+                // re-tokenized, not an actual mistake.
+                if i >= 2, j >= 1, observed[i - 2] + observed[i - 1] == candidate[j - 1] {
+                    for ps in 0...streakCap {
+                        let prev = dp[i - 2][j - 1][ps]
+                        guard prev < inf else { continue }
+                        if prev < dp[i][j][0] {
+                            dp[i][j][0] = prev
+                            parent[i][j][0] = Parent(pi: i - 2, pj: j - 1, ps: ps, kind: .match, valid: true, isMerge: true)
                         }
                     }
                 }
@@ -173,7 +208,10 @@ enum AyahAligner {
             guard p.valid else { break } // reached a free-start seed point
             switch p.kind {
             case .match, .substitute:
-                steps.append(Step(kind: p.kind, observedIndex: ci - 1, candidateIndex: cj - 1))
+                steps.append(Step(
+                    kind: p.kind, observedIndex: ci - 1, candidateIndex: cj - 1,
+                    mergedObservedIndex: p.isMerge ? ci - 2 : nil
+                ))
             case .extra:
                 steps.append(Step(kind: .extra, observedIndex: ci - 1, candidateIndex: nil))
             case .missed:
@@ -188,9 +226,6 @@ enum AyahAligner {
 
     // MARK: - Identification
 
-    /// Never resolve off fewer than this many observed words, no matter how
-    /// unique the match looks - too little evidence to commit to anything.
-    static let minWordsForIdentification = 3
     /// The `currentPages` hint is only considered once at least this many
     /// words have been observed - below this, a tie is left unresolved
     /// rather than guessed via page context.
@@ -223,19 +258,25 @@ enum AyahAligner {
     /// an ayah boundary before anything resolves still works), ranked by
     /// alignment cost (edit distance) rather than treating every candidate
     /// that merely passes as equally valid. Resolves outright on a uniquely
-    /// best-cost candidate; on a genuine tie at the best cost, narrows using
+    /// best-cost candidate - even off a single, sufficiently distinctive
+    /// word (e.g. a word that appears exactly once in the whole Quran):
+    /// a cost-0 match with every other candidate strictly worse is real
+    /// evidence regardless of tail length, so there's no separate minimum-
+    /// word gate on this path. On a genuine tie at the best cost (a shared
+    /// opening, not a uniquely distinctive word), narrows using
     /// `currentPages` only once enough words have been heard and the tie
     /// isn't too wide (see `minWordsForPageAssistedResolve`/
-    /// `maxPageAssistedTieSize`). Otherwise returns nil ("still searching" -
-    /// deliberate on genuine ambiguity, e.g. a bare repeated refrain,
-    /// rather than guessing). `excluding` skips ayahs already rejected by a
-    /// prior identification attempt this session (see `RecitationSession`),
-    /// so a single mis-transcribed word can't cause the same wrong ayah to
-    /// be re-picked immediately after being reopened.
+    /// `maxPageAssistedTieSize`) - ties are where premature commitment is
+    /// actually risky. Otherwise returns nil ("still searching" - deliberate
+    /// on genuine ambiguity, e.g. a bare repeated refrain, rather than
+    /// guessing). `excluding` skips ayahs already rejected by a prior
+    /// identification attempt this session (see `RecitationSession`), so a
+    /// single mis-transcribed word can't cause the same wrong ayah to be
+    /// re-picked immediately after being reopened.
     static func identifyAyah(
         tailWords: [String], database: QuranDatabase, currentPages: ClosedRange<Int>?, excluding: Set<Int> = []
     ) -> IdentificationResult? {
-        guard tailWords.count >= minWordsForIdentification else { return nil }
+        guard !tailWords.isEmpty else { return nil }
 
         let tailSet = Set(tailWords)
         let minOverlap = max(0, tailWords.count - maxConsecutiveErrors)
@@ -259,8 +300,28 @@ enum AyahAligner {
             guard overlap >= min(minOverlap, window.count) else { continue }
 
             guard let alignment = align(observed: tailWords, candidate: window, freeLeadingCandidate: true) else { continue }
-            candidates.append(Candidate(ayahIndex: ayahIndex, flatPosition: start + alignment.candidateStart, cost: alignment.cost))
+            let flatPosition = start + alignment.candidateStart
+            // A match can land inside the widened tail - i.e. actually in
+            // the *next* ayah's own words, not this loop's ayah - so the
+            // resolved ayah must come from where the match landed, not from
+            // which ayah's window we happened to search. Without this, a
+            // word within the first few words of an ayah (e.g. its very
+            // first word) looks like it independently "matches" both that
+            // ayah and its widened-into predecessor, creating a false tie
+            // out of what both really identify as the same position.
+            let resolvedAyahIndex = database.flatWords[min(flatPosition, database.flatWords.count - 1)].ayahIndex
+            guard !excluding.contains(resolvedAyahIndex) else { continue }
+            candidates.append(Candidate(ayahIndex: resolvedAyahIndex, flatPosition: flatPosition, cost: alignment.cost))
         }
+
+        // Collapse duplicates: different loop iterations resolving to the
+        // same real position (see above) must count as one candidate, not a
+        // tie with itself - keeping the lowest cost seen for each ayah.
+        var bestByAyah: [Int: Candidate] = [:]
+        for c in candidates where bestByAyah[c.ayahIndex].map({ c.cost < $0.cost }) ?? true {
+            bestByAyah[c.ayahIndex] = c
+        }
+        candidates = Array(bestByAyah.values)
 
         guard !candidates.isEmpty else { return nil }
         let isProvisional = tailWords.count < solidEvidenceWordCount
@@ -401,6 +462,19 @@ enum AyahAligner {
     /// ahead of a still-unresolved earlier problem (which would desync
     /// `newPosition` from what's actually been judged); a future tick, with
     /// more transcript, revisits it fresh.
+    /// Reconstructs the transcribed tashkeel text a `.match` step actually
+    /// heard - just `observedTashkeel[step.observedIndex]`, unless the step
+    /// resolved via a merge match (see `Step.mergedObservedIndex`), in which
+    /// case the merged word is prepended so e.g. "ان" + "ما" reads as
+    /// "انما" for comparison against the single-word ground truth. Nil if
+    /// either index is out of bounds.
+    static func heardTashkeel(for step: Step, observedTashkeel: [String]) -> String? {
+        guard let oi = step.observedIndex, oi < observedTashkeel.count else { return nil }
+        guard let mi = step.mergedObservedIndex else { return observedTashkeel[oi] }
+        guard mi < observedTashkeel.count else { return nil }
+        return observedTashkeel[mi] + observedTashkeel[oi]
+    }
+
     private static func buildResult(
         _ outcome: AdvanceOutcome, alignment: Alignment, base: Int, observed: [String], observedTashkeel: [String], flat: [FlatWord]
     ) -> AdvanceResult {
@@ -409,10 +483,15 @@ enum AyahAligner {
         let steps = alignment.steps
         for (index, step) in steps.enumerated() {
             var tashkeelOK: Bool?
-            if step.kind == .match, let oi = step.observedIndex, let ci = step.candidateIndex {
-                let heard = oi < observedTashkeel.count ? observedTashkeel[oi] : nil
+            if step.kind == .match, let ci = step.candidateIndex {
                 let expected = flat[base + ci]
-                tashkeelOK = heard == expected.groundTruth || heard == expected.groundTruthAlt
+                if let heard = heardTashkeel(for: step, observedTashkeel: observedTashkeel) {
+                    let heardFolded = foldTaMarbutaForComparison(heard)
+                    tashkeelOK = heardFolded == foldTaMarbutaForComparison(expected.groundTruth)
+                        || heardFolded == foldTaMarbutaForComparison(expected.groundTruthAlt)
+                } else {
+                    tashkeelOK = false
+                }
             }
             let needsGrace = step.kind != .match || tashkeelOK == false
             if needsGrace, steps.count - 1 - index < finalizeGrace {
