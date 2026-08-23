@@ -22,8 +22,8 @@ struct RecitationProgressSnapshot: Equatable {
     let highlightedWordIDs: Set<String>
 }
 
-/// Turns `AyahAligner`'s identification/commit events into word-reveal and
-/// highlight state for the mushaf UI.
+/// Turns the phoneme pipeline's identification/settle events into word-
+/// reveal and highlight state for the mushaf UI.
 ///
 /// Reveal state for the *active* page is always recomputed wholesale from
 /// the current position (every ayah on that page up to the current one, in
@@ -36,10 +36,15 @@ struct RecitationProgressSnapshot: Equatable {
 /// blanket-revealed with no highlight just because it happened to have been
 /// fully passed once already.
 ///
-/// Highlight only ever reflects a word `AyahAligner.advance` has actually
-/// committed (its own grace-holdback already delays a step's commit until
-/// it's settled) - "highlight only after matched" falls out for free by
-/// simply never showing anything ahead of what's been committed.
+/// Highlight only ever reflects a word the aligner has actually settled a
+/// verdict for (match, mismatch, *or* deleted -- position tracking here is
+/// deliberately correctness-agnostic; whether the word was recited right is
+/// a separate concern from where the reciter currently is) - "highlight
+/// only after settled" falls out for free by simply never showing anything
+/// ahead of what's been committed. Unlike the old word-level aligner, the
+/// phoneme pipeline has no "extra word said" concept to filter out (see
+/// `RecitationChecker`'s "why character-level" doc) - every settled result
+/// has a real flat-word position.
 final class RecitationProgressTracker {
     private(set) var highestReachedPage: Int?
     private var activePage: Int?
@@ -66,18 +71,12 @@ final class RecitationProgressTracker {
         return snapshot(database: database)
     }
 
-    /// Called with each tick's newly finalized `AyahAligner.advance`
-    /// commits, in order. `.extra` steps (a word the reciter said that
-    /// isn't part of the expected text) have no ground-truth word to
-    /// position on and are skipped; every other kind (`.match`/
-    /// `.substitute`/`.missed`) advances the position, since all three
-    /// represent a spot `AyahAligner` has finished judging and moved past -
-    /// only *which* word is currently being pointed at, not whether it was
-    /// recited correctly (that's a separate, not-yet-built accuracy
-    /// feature).
-    func handleCommits(_ steps: [(flatIndex: Int, step: AyahAligner.Step, tashkeelOK: Bool?)], database: QuranDatabase) -> RecitationProgressSnapshot {
-        for (flatIndex, step, _) in steps {
-            guard step.kind != .extra else { continue }
+    /// Called with each tick's newly settled flat-word positions, in order
+    /// (mapped from `PhonemeWordCheckResult` via `PhonemeWordMapping` --
+    /// this type deliberately doesn't know about the phoneme pipeline at
+    /// all, only flat-word positions).
+    func handleCommits(_ flatIndices: [Int], database: QuranDatabase) -> RecitationProgressSnapshot {
+        for flatIndex in flatIndices {
             let word = database.flatWords[flatIndex]
             setPosition(ayahIndex: word.ayahIndex, wordIndexInAyah: word.wordIndexInAyah, database: database)
         }

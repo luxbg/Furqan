@@ -132,7 +132,6 @@ struct ContentView: View {
         .overlay(alignment: .bottom) {
             RecitationControlBar(state: recitationBar) {
                 let session = RecitationSession(
-                    currentPages: { rightPage...(rightPage + 1) },
                     barState: recitationBar,
                     onProgress: { recitationProgress.apply($0) },
                     onPageJump: { jumpToPage($0) }

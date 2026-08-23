@@ -1,10 +1,12 @@
 import XCTest
 @testable import Quran
 
-/// Regression tests for QuranDatabase's words-table load and the SVG-slot /
-/// Tanzil-word reconciliation it depends on (WordLocation.swift), built
-/// from real quran.sqlite data (via QuranDatabase, loaded once for the
-/// whole test class) so cases stay accurate if the underlying data changes.
+/// Regression tests for QuranDatabase's words-table load
+/// (`flatWords`/`wordMaps`, built directly from the mushaf SVG's own
+/// per-word rows) and the generic `reconcileWordSlots`/
+/// `proportionalWordSlotMapping` reconciliation machinery in
+/// `WordLocation.swift`, which `PhonemeWordMapping` reuses to align the
+/// phoneme corpus's independently-segmented words onto these same slots.
 final class WordLocationTests: XCTestCase {
     static let database = QuranDatabase()
     var db: QuranDatabase { Self.database }
@@ -13,25 +15,18 @@ final class WordLocationTests: XCTestCase {
         db.ayahs.firstIndex { $0.surah == surah && $0.ayahNumber == ayahNumber }!
     }
 
-    /// Core invariant the whole word-highlighting UI depends on: slot count
-    /// must equal the ayah's Tanzil ground-truth word count, for every
-    /// ayah - whether reconciled cleanly or via the proportional fallback.
-    func testEverySlotCountMatchesGroundTruthWordCount() {
-        for (index, ayah) in db.ayahs.enumerated() {
+    /// Core invariant the whole word-highlighting UI depends on:
+    /// `wordMaps[i].slots.count` must equal the number of `flatWords`
+    /// belonging to that ayah, for every ayah - true by construction now
+    /// (both are built from the same SVG raw-slot pass), but worth pinning
+    /// down as a regression guard.
+    func testEverySlotCountMatchesFlatWordCount() {
+        for (index, _) in db.ayahs.enumerated() {
             XCTAssertEqual(
-                db.wordMaps[index].slots.count, ayah.groundTruthWords.count,
-                "slot count mismatch for \(ayah.surah):\(ayah.ayahNumber)"
+                db.wordMaps[index].slots.count, db.flatWords(inAyahIndex: index).count,
+                "slot count mismatch for ayah index \(index)"
             )
         }
-    }
-
-    /// The reconciliation fallback should stay a small, bounded set (last
-    /// measured directly against the data: ~281 of 6236 ayahs, all mushaf-
-    /// rasm word-fusion cases like a vocative "يا" prefix) - a regression
-    /// guard against it silently growing, which would mean word highlights
-    /// are landing on the wrong word more often than expected.
-    func testReconciliationFallbackStaysBounded() {
-        XCTAssertLessThan(db.wordSlotFallbackAyahIndices.count, 400)
     }
 
     func testFirstWordOfAlFatihaMapsToKnownSVGElement() {
@@ -40,21 +35,9 @@ final class WordLocationTests: XCTestCase {
         XCTAssertEqual(map.page, 1)
     }
 
-    /// Regression case for the reconciliation algorithm itself: 2:21 opens
-    /// with "يَا أَيُّهَا" (2 Tanzil words) drawn as one connected mushaf glyph
-    /// "يَٰٓأَيُّهَا" (1 SVG slot) - both Tanzil word positions must map to
-    /// that same slot, cleanly (not via the fallback).
-    func testFusedVocativeYaResolvesToSharedSlot() {
-        let index = ayahIndex(2, 21)
-        XCTAssertFalse(db.wordSlotFallbackAyahIndices.contains(index), "2:21 should reconcile cleanly, not via fallback")
-        let slots = db.wordMaps[index].slots
-        XCTAssertEqual(slots[0].svgElementIds, slots[1].svgElementIds, "\"يا\" and \"أيها\" should share one svg slot")
-        XCTAssertFalse(slots[0].svgElementIds.isEmpty)
-    }
-
-    /// Regression case for the ordinary (non-fused) waw-al-atf merge, kept
-    /// from the original implementation: 1:5's "وَإِيَّاكَ" is one Tanzil
-    /// word, two SVG glyphs (md-word-021, md-word-022).
+    /// Regression case for the ordinary waw-al-atf merge: 1:5's
+    /// "وَإِيَّاكَ" is one real word, two SVG glyphs (md-word-021,
+    /// md-word-022).
     func testWawAlatfMergesIntoOneSlot() {
         let index = ayahIndex(1, 5)
         let slots = db.wordMaps[index].slots
@@ -65,28 +48,28 @@ final class WordLocationTests: XCTestCase {
     // MARK: - reconcileWordSlots / proportionalWordSlotMapping (pure functions)
 
     func testReconcileExactCounts() {
-        let mapping = reconcileWordSlots(svgSkeletons: ["a", "b", "c"], tanzilSkeletons: ["a", "b", "c"])
+        let mapping = reconcileWordSlots(leftSkeletons: ["a", "b", "c"], rightSkeletons: ["a", "b", "c"])
         XCTAssertEqual(mapping, [0, 1, 2])
     }
 
     func testReconcileTwoWordFusion() {
-        // svg slot 1 ("xy") is the concatenation of tanzil words "x"+"y".
-        let mapping = reconcileWordSlots(svgSkeletons: ["a", "xy", "c"], tanzilSkeletons: ["a", "x", "y", "c"])
+        // left slot 1 ("xy") is the concatenation of right-hand words "x"+"y".
+        let mapping = reconcileWordSlots(leftSkeletons: ["a", "xy", "c"], rightSkeletons: ["a", "x", "y", "c"])
         XCTAssertEqual(mapping, [0, 1, 1, 2])
     }
 
     func testReconcileFailsOnGenuineMismatch() {
-        let mapping = reconcileWordSlots(svgSkeletons: ["a", "b"], tanzilSkeletons: ["a", "z"])
+        let mapping = reconcileWordSlots(leftSkeletons: ["a", "b"], rightSkeletons: ["a", "z"])
         XCTAssertNil(mapping)
     }
 
     func testReconcileEmptyInputsFail() {
-        XCTAssertNil(reconcileWordSlots(svgSkeletons: [], tanzilSkeletons: ["a"]))
-        XCTAssertNil(reconcileWordSlots(svgSkeletons: ["a"], tanzilSkeletons: []))
+        XCTAssertNil(reconcileWordSlots(leftSkeletons: [], rightSkeletons: ["a"]))
+        XCTAssertNil(reconcileWordSlots(leftSkeletons: ["a"], rightSkeletons: []))
     }
 
     func testProportionalFallbackMappingStaysInBounds() {
-        let mapping = proportionalWordSlotMapping(svgCount: 3, tanzilCount: 7)
+        let mapping = proportionalWordSlotMapping(leftCount: 3, rightCount: 7)
         XCTAssertEqual(mapping.count, 7)
         for index in mapping {
             XCTAssertTrue((0..<3).contains(index))
@@ -95,8 +78,8 @@ final class WordLocationTests: XCTestCase {
         XCTAssertEqual(mapping.last, 2)
     }
 
-    func testProportionalFallbackWithZeroSvgSlots() {
-        let mapping = proportionalWordSlotMapping(svgCount: 0, tanzilCount: 3)
+    func testProportionalFallbackWithZeroLeftSlots() {
+        let mapping = proportionalWordSlotMapping(leftCount: 0, rightCount: 3)
         XCTAssertEqual(mapping, [0, 0, 0])
     }
 }

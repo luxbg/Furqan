@@ -12,10 +12,6 @@ final class RecitationProgressTrackerTests: XCTestCase {
         db.ayahs.firstIndex { $0.surah == surah && $0.ayahNumber == ayahNumber }!
     }
 
-    private func matchStep(_ flatIndex: Int) -> (flatIndex: Int, step: AyahAligner.Step, tashkeelOK: Bool?) {
-        (flatIndex, AyahAligner.Step(kind: .match, observedIndex: 0, candidateIndex: 0), true)
-    }
-
     /// Identification alone (before any word is individually matched) sets
     /// the jump target but must not highlight anything within the
     /// identified ayah - there's nothing committed yet to highlight.
@@ -54,7 +50,7 @@ final class RecitationProgressTrackerTests: XCTestCase {
         }
     }
 
-    /// The core "highlight only after matched" requirement: after
+    /// The core "highlight only after settled" requirement: after
     /// committing word 0, only word 0 highlights - word 1 (not yet
     /// committed) must not be the highlight.
     func testHighlightOnlyReflectsMostRecentlyCommittedWord() {
@@ -64,43 +60,27 @@ final class RecitationProgressTrackerTests: XCTestCase {
         let slot0 = db.wordMaps[index].slots[0]
         let slot1 = db.wordMaps[index].slots[1]
 
-        var snapshot = tracker.handleCommits([matchStep(flatStart)], database: db)
+        var snapshot = tracker.handleCommits([flatStart], database: db)
         XCTAssertEqual(snapshot.highlightedWordIDs, Set(slot0.svgElementIds))
         XCTAssertEqual(snapshot.revealedWordIDsOnActivePage, Set(slot0.svgElementIds).union(slot0.markerSvgElementIds))
 
-        snapshot = tracker.handleCommits([matchStep(flatStart + 1)], database: db)
+        snapshot = tracker.handleCommits([flatStart + 1], database: db)
         XCTAssertEqual(snapshot.highlightedWordIDs, Set(slot1.svgElementIds), "highlight should move to the newly committed word")
         XCTAssertTrue(Set(slot0.svgElementIds).isSubset(of: snapshot.revealedWordIDsOnActivePage), "word 0 stays revealed")
     }
 
-    /// An `.extra` step (something said that isn't part of the expected
-    /// text) has no ground-truth word to position on and must not move the
-    /// highlight.
-    func testExtraStepDoesNotMoveHighlight() {
-        let tracker = RecitationProgressTracker()
-        let index = ayahIndex(1, 1)
-        let flatStart = db.flatStart(ofAyahIndex: index)
-        _ = tracker.handleCommits([matchStep(flatStart)], database: db)
-        let slot0 = db.wordMaps[index].slots[0]
-
-        let extraStep = (flatIndex: flatStart, step: AyahAligner.Step(kind: .extra, observedIndex: 1, candidateIndex: nil), tashkeelOK: Bool?.none)
-        let snapshot = tracker.handleCommits([extraStep], database: db)
-
-        XCTAssertEqual(snapshot.highlightedWordIDs, Set(slot0.svgElementIds), "highlight must stay on the last real commit")
-    }
-
-    /// A `.missed` step (the aligner determined a word wasn't recited)
-    /// still advances the position/reveal - it represents a spot the
-    /// aligner has finished judging and moved past, which is what
-    /// "revealed" tracks here (not correctness - a separate feature).
-    func testMissedStepStillReveals() {
+    /// Position tracking here is correctness-agnostic: a settled word
+    /// (whether it matched, mismatched, or was never recited at all) still
+    /// advances reveal/highlight - it represents a spot the aligner has
+    /// finished judging and moved past, which is what "revealed" tracks
+    /// (correctness is a separate concern, surfaced elsewhere).
+    func testAnySettledPositionStillReveals() {
         let tracker = RecitationProgressTracker()
         let index = ayahIndex(1, 1)
         let flatStart = db.flatStart(ofAyahIndex: index)
         let slot0 = db.wordMaps[index].slots[0]
 
-        let missedStep = (flatIndex: flatStart, step: AyahAligner.Step(kind: .missed, observedIndex: nil, candidateIndex: 0), tashkeelOK: Bool?.none)
-        let snapshot = tracker.handleCommits([missedStep], database: db)
+        let snapshot = tracker.handleCommits([flatStart], database: db)
 
         XCTAssertEqual(snapshot.highlightedWordIDs, Set(slot0.svgElementIds))
     }
@@ -113,8 +93,8 @@ final class RecitationProgressTrackerTests: XCTestCase {
         let secondIndex = ayahIndex(1, 2)
 
         let firstFlatStart = db.flatStart(ofAyahIndex: firstIndex)
-        let steps = (0..<db.ayahs[firstIndex].groundTruthWords.count).map { matchStep(firstFlatStart + $0) }
-        let snapshot = tracker.handleCommits(steps, database: db)
+        let flatIndices = Array(firstFlatStart..<(firstFlatStart + db.flatWords(inAyahIndex: firstIndex).count))
+        let snapshot = tracker.handleCommits(flatIndices, database: db)
 
         for slot in db.wordMaps[secondIndex].slots {
             for id in slot.svgElementIds {
@@ -133,10 +113,10 @@ final class RecitationProgressTrackerTests: XCTestCase {
         XCTAssertNotEqual(db.ayahs[lastIndex].startPage, db.ayahs[nextIndex].startPage, "test assumes a page boundary here")
 
         let lastFlatStart = db.flatStart(ofAyahIndex: lastIndex)
-        var steps = (0..<db.ayahs[lastIndex].groundTruthWords.count).map { matchStep(lastFlatStart + $0) }
-        steps.append(matchStep(db.flatStart(ofAyahIndex: nextIndex)))
+        var flatIndices = Array(lastFlatStart..<(lastFlatStart + db.flatWords(inAyahIndex: lastIndex).count))
+        flatIndices.append(db.flatStart(ofAyahIndex: nextIndex))
 
-        let snapshot = tracker.handleCommits(steps, database: db)
+        let snapshot = tracker.handleCommits(flatIndices, database: db)
 
         XCTAssertEqual(snapshot.highestReachedPage, db.ayahs[nextIndex].startPage)
         XCTAssertEqual(snapshot.activePage, db.ayahs[nextIndex].startPage)
@@ -150,14 +130,14 @@ final class RecitationProgressTrackerTests: XCTestCase {
         let lastIndex = ayahIndex(1, 7)
         let nextIndex = ayahIndex(2, 1)
         let lastFlatStart = db.flatStart(ofAyahIndex: lastIndex)
-        var steps = (0..<db.ayahs[lastIndex].groundTruthWords.count).map { matchStep(lastFlatStart + $0) }
-        steps.append(matchStep(db.flatStart(ofAyahIndex: nextIndex)))
-        _ = tracker.handleCommits(steps, database: db)
+        var flatIndices = Array(lastFlatStart..<(lastFlatStart + db.flatWords(inAyahIndex: lastIndex).count))
+        flatIndices.append(db.flatStart(ofAyahIndex: nextIndex))
+        _ = tracker.handleCommits(flatIndices, database: db)
         let highestBefore = tracker.highestReachedPage
 
         // Reciter repeats 1:1 (earlier than what's already been passed).
         let repeatedIndex = ayahIndex(1, 1)
-        let snapshot = tracker.handleCommits([matchStep(db.flatStart(ofAyahIndex: repeatedIndex))], database: db)
+        let snapshot = tracker.handleCommits([db.flatStart(ofAyahIndex: repeatedIndex)], database: db)
 
         XCTAssertEqual(tracker.highestReachedPage, highestBefore, "highest reached page must not shrink")
         XCTAssertEqual(snapshot.activePage, db.ayahs[repeatedIndex].startPage)
@@ -173,12 +153,12 @@ final class RecitationProgressTrackerTests: XCTestCase {
         let lastIndex = ayahIndex(1, 7)
         let nextIndex = ayahIndex(2, 1)
         let lastFlatStart = db.flatStart(ofAyahIndex: lastIndex)
-        var steps = (0..<db.ayahs[lastIndex].groundTruthWords.count).map { matchStep(lastFlatStart + $0) }
-        steps.append(matchStep(db.flatStart(ofAyahIndex: nextIndex)))
-        _ = tracker.handleCommits(steps, database: db)
+        var flatIndices = Array(lastFlatStart..<(lastFlatStart + db.flatWords(inAyahIndex: lastIndex).count))
+        flatIndices.append(db.flatStart(ofAyahIndex: nextIndex))
+        _ = tracker.handleCommits(flatIndices, database: db)
 
         let repeatedIndex = ayahIndex(1, 3)
-        let snapshot = tracker.handleCommits([matchStep(db.flatStart(ofAyahIndex: repeatedIndex))], database: db)
+        let snapshot = tracker.handleCommits([db.flatStart(ofAyahIndex: repeatedIndex)], database: db)
 
         XCTAssertEqual(snapshot.activePage, db.ayahs[repeatedIndex].startPage)
         XCTAssertEqual(snapshot.highlightedWordIDs, Set(db.wordMaps[repeatedIndex].slots[0].svgElementIds))
@@ -188,7 +168,7 @@ final class RecitationProgressTrackerTests: XCTestCase {
     func testResetClearsAllState() {
         let tracker = RecitationProgressTracker()
         let index = ayahIndex(1, 1)
-        _ = tracker.handleCommits([matchStep(db.flatStart(ofAyahIndex: index))], database: db)
+        _ = tracker.handleCommits([db.flatStart(ofAyahIndex: index)], database: db)
 
         tracker.reset()
         XCTAssertNil(tracker.highestReachedPage)

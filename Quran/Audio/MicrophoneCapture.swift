@@ -1,17 +1,21 @@
 import AVFoundation
 
 /// Taps the default input device, converts whatever native format the
-/// device gives (typically 44.1/48kHz) to 16kHz mono Float32, and keeps a
-/// rolling 30-second window of samples for periodic full re-decode (see
-/// RecitationSession) rather than growing the buffer for the whole session.
+/// device gives (typically 44.1/48kHz) to 16kHz mono Float32, and pushes
+/// each converted chunk to a callback as it arrives - true streaming, for
+/// the phoneme ASR's incremental `feedAudio` (unlike the old rolling-
+/// buffer-plus-periodic-full-redecode design this replaced).
+///
+/// The callback runs on a dedicated serial delivery queue, never on
+/// CoreAudio's own render thread - `StreamingPhonemeRecognizer.feedAudio`
+/// runs a neural network and must never block the audio tap.
 nonisolated final class MicrophoneCapture {
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
     private let targetFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16_000, channels: 1, interleaved: false)!
-    private let maxSamples = 16_000 * 30
 
-    private let queue = DispatchQueue(label: "MicrophoneCapture.buffer")
-    private var buffer: [Float] = []
+    private let deliveryQueue = DispatchQueue(label: "MicrophoneCapture.delivery")
+    private var onSamples: (([Float]) -> Void)?
 
     /// Must request/confirm mic authorization *before* touching
     /// `engine.inputNode` - reading its format (let alone installing a tap
@@ -19,8 +23,9 @@ nonisolated final class MicrophoneCapture {
     /// invalid (0-channel) format on macOS, and `installTap` with an
     /// invalid format throws an uncaught Objective-C exception that
     /// crashes the process outright, with no dialog and nothing in the UI.
-    func start() async throws {
+    func start(onSamples: @escaping ([Float]) -> Void) async throws {
         try await requestAuthorizationIfNeeded()
+        self.onSamples = onSamples
 
         let input = engine.inputNode
         let inputFormat = input.inputFormat(forBus: 0)
@@ -58,12 +63,7 @@ nonisolated final class MicrophoneCapture {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         converter = nil
-        queue.sync { buffer.removeAll() }
-    }
-
-    /// Snapshot of the current rolling window, oldest sample first.
-    func snapshot() -> [Float] {
-        queue.sync { buffer }
+        onSamples = nil
     }
 
     private func consume(_ pcmBuffer: AVAudioPCMBuffer, inputFormat: AVAudioFormat) {
@@ -85,12 +85,9 @@ nonisolated final class MicrophoneCapture {
         guard error == nil, let channelData = outBuffer.floatChannelData else { return }
 
         let samples = Array(UnsafeBufferPointer(start: channelData[0], count: Int(outBuffer.frameLength)))
-        queue.sync {
-            buffer.append(contentsOf: samples)
-            if buffer.count > maxSamples {
-                buffer.removeFirst(buffer.count - maxSamples)
-            }
-        }
+        guard !samples.isEmpty else { return }
+        let callback = onSamples
+        deliveryQueue.async { callback?(samples) }
     }
 }
 

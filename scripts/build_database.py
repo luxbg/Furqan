@@ -32,22 +32,11 @@ VERSE_FIELDS = (
     "ruku_number,sajdah_number,sajdah_type,page_number"
 )
 
-# Two Tanzil "Simple" text variants (CC BY 3.0, tanzil.net), both plain
-# (non-mushaf-rasm) Arabic spelling with full tashkeel, differing only in
-# whether idgham/assimilation is notated (e.g. "مِنْ رَبِّهِمْ" letter-by-
-# letter vs. the assimilated "مِّن رَّبِّهِمْ", sukun/shaddah merged to
-# represent the pronunciation rule). Found live (2026-08-17): the ASR isn't
-# consistently one or the other per word - e.g. it transcribed "مِن" (no
-# sukun, assimilated-style) for a word the plain file spells "مِنْ", even
-# though nothing about that word triggers real idgham. Rather than guess
-# which convention the model follows for a given word, both are loaded as
-# ground truth (`text_imlaei_tashkeel` / `text_imlaei_tashkeel_alt`) and a
-# match against *either* counts as correct (see
-# `Quran/Recitation/RecitationSession.swift`). `text_imlaei` (skeleton
-# matching) is derived from the plain file only - skeleton-stripping erases
-# this distinction anyway, so it doesn't matter which source feeds it.
+# Tanzil "Simple" text (CC BY 3.0, tanzil.net), plain (non-mushaf-rasm)
+# Arabic spelling with full tashkeel. Recitation matching is phoneme-level
+# now (see Quran/Phoneme/), not text-level - this is kept only to derive
+# `ayahs.text_imlaei` (skeleton form) via `skeleton_strip` below.
 TANZIL_PLAIN_PATH = Path(__file__).resolve().parent / "quran-simple-plain.txt"
-TANZIL_ASSIMILATED_PATH = Path(__file__).resolve().parent / "quran-simple-assimilated.txt"
 
 # Mirrors Quran/Data/ArabicNormalization.swift's normalizeArabicSkeleton -
 # strips diacritics/tatweel and folds every hamza seat to bare alif, so
@@ -112,8 +101,6 @@ CREATE TABLE ayahs (
   ayah_number INTEGER NOT NULL,
   text_uthmani TEXT NOT NULL,
   text_imlaei TEXT NOT NULL,
-  text_imlaei_tashkeel TEXT NOT NULL,
-  text_imlaei_tashkeel_alt TEXT NOT NULL,
   word_count INTEGER NOT NULL,
   start_page INTEGER NOT NULL REFERENCES pages(number),
   end_page INTEGER NOT NULL REFERENCES pages(number),
@@ -137,7 +124,6 @@ CREATE TABLE words (
   page INTEGER NOT NULL REFERENCES pages(number),
   line INTEGER NOT NULL,
   text_uthmani TEXT NOT NULL,
-  text_imlaei TEXT NOT NULL,
   word_type TEXT NOT NULL,
   waqf_kind TEXT,
   is_waw_alatf INTEGER NOT NULL DEFAULT 0,
@@ -284,7 +270,6 @@ def parse_svgs():
                     "page": page_number,
                     "line": line_no,
                     "text_uthmani": el.get("data-hafs") or "",
-                    "text_imlaei": el.get("data-imlaey") or "",
                     "word_type": word_type,
                     "waqf_kind": waqf_kind,
                     "is_waw_alatf": 1 if el.get("data-waw-alatf") == "true" else 0,
@@ -332,20 +317,19 @@ def join_words(words, field):
     return "".join(parts)
 
 
-def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts, tanzil_texts_alt):
+def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts):
     missing_marks = set(ayahs) - set(aya_marks)
     if missing_marks:
         raise AssertionError(f"ayahs with no aya-mark in SVGs: {sorted(missing_marks)[:10]}")
     missing_qul = set(ayahs) - set(qul_verses)
     if missing_qul:
         raise AssertionError(f"ayahs missing from QUL: {sorted(missing_qul)[:10]}")
-    for name, texts in (("plain", tanzil_texts), ("assimilated", tanzil_texts_alt)):
-        missing_tanzil = set(ayahs) - set(texts)
-        if missing_tanzil:
-            raise AssertionError(f"ayahs missing from Tanzil {name} text: {sorted(missing_tanzil)[:10]}")
-        extra_tanzil = set(texts) - set(ayahs)
-        if extra_tanzil:
-            raise AssertionError(f"Tanzil {name} text has ayahs not in SVGs: {sorted(extra_tanzil)[:10]}")
+    missing_tanzil = set(ayahs) - set(tanzil_texts)
+    if missing_tanzil:
+        raise AssertionError(f"ayahs missing from Tanzil plain text: {sorted(missing_tanzil)[:10]}")
+    extra_tanzil = set(tanzil_texts) - set(ayahs)
+    if extra_tanzil:
+        raise AssertionError(f"Tanzil plain text has ayahs not in SVGs: {sorted(extra_tanzil)[:10]}")
 
     ayah_rows = []
     surah_pages = {}  # surah -> [min_page, max_page]
@@ -373,8 +357,6 @@ def assemble(ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts, ta
             "ayah_number": ayah_number,
             "text_uthmani": text_uthmani,
             "text_imlaei": text_imlaei,
-            "text_imlaei_tashkeel": tanzil_texts[key],
-            "text_imlaei_tashkeel_alt": tanzil_texts_alt[key],
             "word_count": len(text_words),
             "start_page": a["start_page"],
             "end_page": end_page,
@@ -466,11 +448,11 @@ def write_db(surah_rows, page_rows, ayah_rows, word_rows):
     )
     conn.executemany(
         """INSERT INTO ayahs
-           (id, surah, ayah_number, text_uthmani, text_imlaei, text_imlaei_tashkeel, text_imlaei_tashkeel_alt, word_count,
+           (id, surah, ayah_number, text_uthmani, text_imlaei, word_count,
             start_page, end_page, start_line, end_line,
             juz_number, hizb_number, rub_el_hizb_number, manzil_number, ruku_number,
             is_sajda, sajda_type)
-           VALUES (:id, :surah, :ayah_number, :text_uthmani, :text_imlaei, :text_imlaei_tashkeel, :text_imlaei_tashkeel_alt, :word_count,
+           VALUES (:id, :surah, :ayah_number, :text_uthmani, :text_imlaei, :word_count,
                    :start_page, :end_page, :start_line, :end_line,
                    :juz_number, :hizb_number, :rub_el_hizb_number, :manzil_number, :ruku_number,
                    :is_sajda, :sajda_type)""",
@@ -478,9 +460,9 @@ def write_db(surah_rows, page_rows, ayah_rows, word_rows):
     )
     conn.executemany(
         """INSERT INTO words
-           (surah, ayah_number, word_index, page, line, text_uthmani, text_imlaei,
+           (surah, ayah_number, word_index, page, line, text_uthmani,
             word_type, waqf_kind, is_waw_alatf, svg_element_id)
-           VALUES (:surah, :ayah_number, :word_index, :page, :line, :text_uthmani, :text_imlaei,
+           VALUES (:surah, :ayah_number, :word_index, :page, :line, :text_uthmani,
                    :word_type, :waqf_kind, :is_waw_alatf, :svg_element_id)""",
         word_rows,
     )
@@ -501,13 +483,9 @@ def main():
     tanzil_texts = fetch_tanzil_text(TANZIL_PLAIN_PATH)
     print(f"  {len(tanzil_texts)} ayahs")
 
-    print("Parsing Tanzil simple-assimilated text...")
-    tanzil_texts_alt = fetch_tanzil_text(TANZIL_ASSIMILATED_PATH)
-    print(f"  {len(tanzil_texts_alt)} ayahs")
-
     print("Joining...")
     surah_rows, page_rows, ayah_rows, word_rows = assemble(
-        ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts, tanzil_texts_alt
+        ayahs, aya_marks, pages, qul_chapters, qul_verses, tanzil_texts
     )
 
     print("Validating...")
