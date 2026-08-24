@@ -11,15 +11,17 @@ final class PhonemeWordAlignerTests: XCTestCase {
     private func makeCorpus(
         words: [String],
         isolated: [String?]? = nil,
-        continued: [String?]? = nil
+        continued: [String?]? = nil,
+        wordTexts: [String?]? = nil
     ) -> PhonemeCorpus {
         let iso = isolated ?? Array(repeating: nil, count: words.count)
         let cont = continued ?? Array(repeating: nil, count: words.count)
-        let entries = zip(zip(words, iso), cont).enumerated().map { i, pair -> PhonemeGlobalWordEntry in
-            let ((word, isolatedText), continuedText) = pair
+        let texts = wordTexts ?? Array(repeating: nil, count: words.count)
+        let entries = zip(zip(zip(words, iso), cont), texts).enumerated().map { i, pair -> PhonemeGlobalWordEntry in
+            let (((word, isolatedText), continuedText), wordText) = pair
             return PhonemeGlobalWordEntry(
                 globalWordIdx: i, surah: 1, ayah: 1, localWordIdx: i,
-                phonemeText: word, wordText: nil,
+                phonemeText: word, wordText: wordText,
                 isolatedPhonemeText: isolatedText, continuedPhonemeText: continuedText,
                 wordTextContinuesPrevious: false
             )
@@ -283,5 +285,108 @@ final class PhonemeWordAlignerTests: XCTestCase {
         XCTAssertEqual(byIdx[2]?.actualPhonemes, "قَلِۦۦلَ")
         XCTAssertEqual(byIdx[3]?.status, .match, "the bled noon landing inside the next word's own audio must still be recovered")
         XCTAssertEqual(byIdx[3]?.actualPhonemes, "بَعدَهُم")
+    }
+
+    /// Real-world report: reciting Al-Baqarah continuously, ayah 2 flows
+    /// straight into ayah 3's "ٱلَّذِينَ" with no pause between them --
+    /// hamzat wasl is only pronounced when a reciter starts fresh on that
+    /// word, so the actual audio has no hamza at all ("للَذِۦۦنَ", not the
+    /// corpus's ayah-initial-assuming "ءَللَذِۦۦنَ"). Must match, not flag
+    /// a phantom hamza mistake.
+    func testAyahInitialHamzatWaslWordRecitedWithoutPauseNotFlaggedAsMismatch() {
+        let words = ["بسم", "الله", "ءَللَذِۦۦنَ"]
+        let wordTexts: [String?] = [nil, nil, "ٱلَّذِينَ"]
+        let corpus = makeCorpus(words: words, wordTexts: wordTexts)
+        var results: [PhonemeWordCheckResult] = []
+        let settings = PhonemeSettings.default
+        let aligner = IncrementalWordAligner(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+        aligner.localize(0)
+
+        let recited = [words[0], words[1], "للَذِۦۦنَ"]
+        aligner.feedTokens(tokensFor(recited.joined()))
+        aligner.flush()
+
+        let byIdx = Dictionary(uniqueKeysWithValues: results.map { ($0.wordIndex, $0) })
+        XCTAssertEqual(byIdx[2]?.status, .match, "hamzat wasl elided on a continuous recitation must be forgiven, not flagged")
+        XCTAssertEqual(byIdx[2]?.actualPhonemes, "للَذِۦۦنَ")
+    }
+
+    /// Real live-capture regression (2:2 -> 2:3, continuous recitation):
+    /// the ASR dropped the hamza itself but still emitted a residual
+    /// leading fatha ("َللَذِۦۦنَ") rather than silencing the whole
+    /// hamza+vowel pair cleanly. Still just "hamza not pronounced", not a
+    /// second real pronunciation -- `waslElidedForms` must accept this
+    /// variant too.
+    func testAyahInitialHamzatWaslWordWithResidualVowelStillMatches() {
+        let words = ["بسم", "الله", "ءَللَذِۦۦنَ"]
+        let wordTexts: [String?] = [nil, nil, "ٱلَّذِينَ"]
+        let corpus = makeCorpus(words: words, wordTexts: wordTexts)
+        var results: [PhonemeWordCheckResult] = []
+        let settings = PhonemeSettings.default
+        let aligner = IncrementalWordAligner(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+        aligner.localize(0)
+
+        let recited = [words[0], words[1], "َللَذِۦۦنَ"]
+        aligner.feedTokens(tokensFor(recited.joined()))
+        aligner.flush()
+
+        let byIdx = Dictionary(uniqueKeysWithValues: results.map { ($0.wordIndex, $0) })
+        XCTAssertEqual(byIdx[2]?.status, .match, "hamza dropped with a residual leading vowel must still be forgiven")
+        XCTAssertEqual(byIdx[2]?.actualPhonemes, "َللَذِۦۦنَ")
+    }
+
+    /// A word beginning with a *real* hamza (qat', always pronounced --
+    /// e.g. "إِنَّ", written with إ not the wasl sign ٱ) reciting without
+    /// its hamza is a genuine mistake, not a wasl elision -- must still be
+    /// flagged. Guards `waslElidedForm`'s gate on `wordText`'s own leading
+    /// character.
+    func testRealHamzaWordMissingItsHamzaStillFlaggedAsMismatch() {
+        let words = ["بسم", "الله", "ءِننننَ"]
+        let wordTexts: [String?] = [nil, nil, "إِنَّ"]
+        let corpus = makeCorpus(words: words, wordTexts: wordTexts)
+        var results: [PhonemeWordCheckResult] = []
+        let settings = PhonemeSettings.default
+        let aligner = IncrementalWordAligner(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+        aligner.localize(0)
+
+        let recited = [words[0], words[1], "نننَ"]
+        aligner.feedTokens(tokensFor(recited.joined()))
+        aligner.flush()
+
+        let byIdx = Dictionary(uniqueKeysWithValues: results.map { ($0.wordIndex, $0) })
+        XCTAssertEqual(byIdx[2]?.status, .mismatch, "a real hamza is never elided -- dropping it is a genuine mistake")
+    }
+
+    /// Real live-session regression (11:57, "تَضُرُّونَهُۥ شَيْـًٔا"): word2
+    /// ends in a droppable doubled madd ("ۥۥ") and settles early via
+    /// `trySettleDroppableTrailing`, before its own real trailing "ۥۥ"
+    /// audio has arrived. That audio then streams in and correctly bleeds
+    /// into word3's actual buffer as a leading "ۥۥ" -- `stripConnectedTailBleed`
+    /// strips it fine. But word3 was recited with a pause, so its *own*
+    /// content only matches its standalone form ("شَيءَاا"), not the
+    /// connected one ("شَيءَن") the old code exclusively re-checked a
+    /// debled candidate against -- a debled-but-still-mismatched word
+    /// wrongly displayed the *raw*, bleed-contaminated actual too.
+    func testBleedStrippedCandidateIsAlsoCheckedAgainstIsolatedForm() {
+        let words = ["بسم", "الله", "تَضُررُۥۥنَهُۥۥ", "شَيءَن"]
+        let isolated: [String?] = [nil, nil, nil, "شَيءَاا"]
+        let corpus = makeCorpus(words: words, isolated: isolated)
+        var results: [PhonemeWordCheckResult] = []
+        let settings = PhonemeSettings.default
+        let aligner = IncrementalWordAligner(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+        aligner.localize(0)
+
+        // Word2's own audio, missing its trailing "ۥۥ" -- settles early via
+        // the droppable-trailing fast path.
+        aligner.feedTokens(tokensFor([words[0], words[1], "تَضُررُۥۥنَهُ"].joined()))
+        // The delayed "ۥۥ" bleeds into word3, which was then recited fully
+        // in its own paused/standalone form.
+        aligner.feedTokens(tokensFor("ۥۥ" + "شَيءَاا"))
+        aligner.flush()
+
+        let byIdx = Dictionary(uniqueKeysWithValues: results.map { ($0.wordIndex, $0) })
+        XCTAssertEqual(byIdx[2]?.status, .match)
+        XCTAssertEqual(byIdx[3]?.status, .match, "the bled prefix must be stripped, then rechecked against word3's own standalone form")
+        XCTAssertEqual(byIdx[3]?.actualPhonemes, "شَيءَاا")
     }
 }

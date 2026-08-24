@@ -13,6 +13,10 @@ final class RecitationProgress {
     private(set) var activePage: Int?
     private(set) var revealedWordIDsOnActivePage: Set<String> = []
     private(set) var highlightedWordIDs: Set<String> = []
+    /// Keyed by page number - see `RecitationProgressSnapshot.wrongWordIDsByPage`
+    /// for why this must never be flattened into a single page-agnostic set.
+    private(set) var wrongWordIDsByPage: [Int: Set<String>] = [:]
+    private(set) var gatedWordIDs: Set<String> = []
     private(set) var isActive = false
 
     func beginSession() {
@@ -21,6 +25,8 @@ final class RecitationProgress {
         activePage = nil
         revealedWordIDsOnActivePage = []
         highlightedWordIDs = []
+        wrongWordIDsByPage = [:]
+        gatedWordIDs = []
     }
 
     func endSession() {
@@ -29,6 +35,8 @@ final class RecitationProgress {
         activePage = nil
         revealedWordIDsOnActivePage = []
         highlightedWordIDs = []
+        wrongWordIDsByPage = [:]
+        gatedWordIDs = []
     }
 
     func apply(_ snapshot: RecitationProgressSnapshot) {
@@ -36,5 +44,7 @@ final class RecitationProgress {
         activePage = snapshot.activePage
         revealedWordIDsOnActivePage = snapshot.revealedWordIDsOnActivePage
         highlightedWordIDs = snapshot.highlightedWordIDs
+        wrongWordIDsByPage = snapshot.wrongWordIDsByPage
+        gatedWordIDs = snapshot.gatedWordIDs
     }
 }

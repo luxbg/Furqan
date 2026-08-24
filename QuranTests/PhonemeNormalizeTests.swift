@@ -39,6 +39,14 @@ final class PhonemeNormalizeTests: XCTestCase {
         XCTAssertTrue(PhonemeNormalize.phonemesMatch("قَلِۦۦلَاا", "قَلِۦۦلَ"))
     }
 
+    /// Real-world report: "عَزِيزٌ ذُو ٱنتِقَامٍ" (3:4) recited normally
+    /// (not paused) came back as "ذُ" against the corpus's "ذُۥۥ" -- ذُو's
+    /// own natural (2-count) waw-madd elongation, the same kind of trailing
+    /// sound an ASR model clips just as readily as a trailing short vowel.
+    func testTrailingWawMaddDropIsTolerated() {
+        XCTAssertTrue(PhonemeNormalize.phonemesMatch("ذُۥۥ", "ذُ"))
+    }
+
     /// A wrong final letter is still a real mistake, not a rendering
     /// choice, even when it's one character short -- must never be
     /// silently tolerated just because the lengths line up.
@@ -51,6 +59,21 @@ final class PhonemeNormalizeTests: XCTestCase {
     /// independently stripping trailing vowels from both sides.
     func testWrongShortVowelIsNotTolerated() {
         XCTAssertFalse(PhonemeNormalize.phonemesMatch("رَ", "رُ"))
+    }
+
+    /// Regression: the droppable-trailing-vowel tolerance must be one-way
+    /// only (forgiving `expected`'s own vowel being dropped at a pause) --
+    /// a genuinely WRONG vowel tacked onto `actual`, one character longer
+    /// than `expected`, must never be forgiven just because that wrong
+    /// vowel happens to also be a member of the droppable set. Confirmed
+    /// live: "أَلْفَ" ("ءَلفَ", fatha) recited with the wrong final vowel
+    /// ("ءَلفُ", damma) matched anyway via the isolated/paused-form fallback
+    /// ("ءَلف", no vowel at all) -- ANY appended vowel looked "droppable"
+    /// against a form that has none, regardless of whether it was the
+    /// right one.
+    func testWrongTrailingVowelAppendedToActualIsNotTolerated() {
+        XCTAssertFalse(PhonemeNormalize.phonemesMatch("بِسم", "بِسمِ"), "expected shorter (paused/isolated form), actual has an extra vowel - must not be forgiven")
+        XCTAssertFalse(PhonemeNormalize.phonemesMatch("ءَلف", "ءَلفُ"), "isolated form has no vowel at all - any appended vowel on actual is a real mismatch, not a drop")
     }
 
     /// A single wrong character in an otherwise-long word must still be

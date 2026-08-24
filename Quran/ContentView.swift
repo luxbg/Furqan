@@ -276,21 +276,28 @@ struct ContentView: View {
     private func wordDisplayState(for page: Int)
         -> MushafPageView.WordDisplayState
     {
-        guard recitationProgress.isActive else { return .unmasked }
+        guard recitationProgress.isActive else { return .unmasked(wrongIDs: []) }
+        // `wrongWordIDsByPage` is keyed by page - `WordSlot.svgElementIds`
+        // are only unique within one page's own SVG (every page's ids start
+        // back over at `md-word-001`), so this must always look up just
+        // this page's own entry, never pass another page's ids in here.
+        let wrongOnThisPage = recitationProgress.wrongWordIDsByPage[page] ?? []
         if recitationProgress.activePage == page {
             return .masked(
                 revealedIDs: recitationProgress.revealedWordIDsOnActivePage,
-                highlightedIDs: recitationProgress.highlightedWordIDs
+                highlightedIDs: recitationProgress.highlightedWordIDs,
+                wrongIDs: wrongOnThisPage,
+                gatedIDs: recitationProgress.gatedWordIDs
             )
         }
         if let active = recitationProgress.activePage, page < active {
-            return .unmasked
+            return .unmasked(wrongIDs: wrongOnThisPage)
         }
         if let highest = recitationProgress.highestReachedPage, page <= highest
         {
-            return .unmasked
+            return .unmasked(wrongIDs: wrongOnThisPage)
         }
-        return .masked(revealedIDs: [], highlightedIDs: [])
+        return .masked(revealedIDs: [], highlightedIDs: [], wrongIDs: [], gatedIDs: [])
     }
 
     /// Follows the reciter to whichever page they're currently on. Reuses

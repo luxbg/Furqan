@@ -38,6 +38,15 @@ nonisolated final class RecitationSession {
     private var checker: RecitationChecker?
 
     private let progressTracker = RecitationProgressTracker()
+    private let settings: PhonemeSettings = .default
+    /// Mirrors `progressTracker.strictGateFlatIndex`, but in this pipeline's
+    /// own `globalWordIdx` space - captured directly from the
+    /// `PhonemeWordCheckResult` that opened the gate (no reverse flat-index
+    /// -> corpus lookup needed). Kept in sync by `handleWordResult`/
+    /// `handleRelocalized`; used to detect a genuine backward relocalize
+    /// (see `handleRelocalized`) - the checker itself independently halts
+    /// forward recognition at the same word (see `RecitationChecker.pinToGate`).
+    private var strictGateGlobalWordIdx: Int?
     /// Rolling display string of the last few settled words' own Uthmani
     /// text - the phoneme ASR's raw output is an internal phonetic
     /// alphabet, not readable Arabic script, so (unlike the old word-level
@@ -60,6 +69,8 @@ nonisolated final class RecitationSession {
         wasPaused = false
         recentWordsDisplay = []
         progressTracker.reset()
+        progressTracker.strictMode = settings.strictMode
+        strictGateGlobalWordIdx = nil
         sessionClockStart = Date()
 
         let barState = barState
@@ -97,19 +108,20 @@ nonisolated final class RecitationSession {
         self.corpus = corpus
         self.mapping = mapping
         self.recognizer = recognizer
-        self.checker = Self.makeChecker(corpus: corpus, session: self)
+        self.checker = Self.makeChecker(corpus: corpus, settings: settings, session: self)
 
         try await mic.start { [weak self] samples in
             self?.processSamples(samples)
         }
     }
 
-    private static func makeChecker(corpus: PhonemeCorpus, session: RecitationSession) -> RecitationChecker {
+    private static func makeChecker(corpus: PhonemeCorpus, settings: PhonemeSettings, session: RecitationSession) -> RecitationChecker {
         RecitationChecker(
             corpus: corpus,
-            settings: .default,
+            settings: settings,
             onWordResult: { [weak session] result in session?.handleWordResult(result) },
-            onStatus: { [weak session] message in session?.handleStatus(message) }
+            onStatus: { [weak session] message in session?.handleStatus(message) },
+            onRelocalized: { [weak session] globalWordIdx in session?.handleRelocalized(globalWordIdx) }
         )
     }
 
@@ -143,12 +155,14 @@ nonisolated final class RecitationSession {
             // exactly like a fresh session start: fresh locator/aligner
             // (via a fresh RecitationChecker), same corpus/database/mapping.
             progressTracker.reset()
+            progressTracker.strictMode = settings.strictMode
+            strictGateGlobalWordIdx = nil
             dispatch(RecitationProgressSnapshot(
                 highestReachedPage: nil, activePage: nil,
-                revealedWordIDsOnActivePage: [], highlightedWordIDs: []
+                revealedWordIDsOnActivePage: [], highlightedWordIDs: [], wrongWordIDsByPage: [:], gatedWordIDs: []
             ))
             guard let corpus else { return }
-            checker = Self.makeChecker(corpus: corpus, session: self)
+            checker = Self.makeChecker(corpus: corpus, settings: settings, session: self)
             do {
                 try await mic.start { [weak self] samples in
                     self?.processSamples(samples)
@@ -184,12 +198,40 @@ nonisolated final class RecitationSession {
         }
 
         guard let flatIndex = mapping.flatIndex(for: result, database: database) else { return }
-        let snapshot = progressTracker.handleCommits([flatIndex], database: database)
+        let gateWasActive = progressTracker.strictGateFlatIndex != nil
+        let commit = RecitationCommit(flatIndex: flatIndex, status: result.status, isSessionEndDeletion: result.isSessionEndDeletion)
+        let snapshot = progressTracker.handleCommits([commit], database: database)
+
+        if settings.strictMode {
+            if !gateWasActive, progressTracker.strictGateFlatIndex != nil {
+                // A gate just opened at this exact commit -- its
+                // globalWordIndex is right here, no reverse flat->corpus
+                // lookup needed.
+                strictGateGlobalWordIdx = result.globalWordIndex
+            } else if gateWasActive, progressTracker.strictGateFlatIndex == nil {
+                strictGateGlobalWordIdx = nil
+            }
+        }
+
         dispatch(snapshot)
     }
 
     private func handleStatus(_ message: String) {
         print("[ayah] \(message)")
+    }
+
+    /// Wired to `RecitationChecker.onRelocalized` - fired on every genuine
+    /// relocalization (never ordinary forward settling, and never the
+    /// checker's own `pinToGate` re-pin onto the *same* word - that always
+    /// reports `globalWordIdx == gate`, not `<`). Confirmed with the user:
+    /// only a jump *backward* of a stuck strict-mode gate counts as "the
+    /// reciter deliberately moved on for real" and releases it; a confident
+    /// jump forward must not, since that would just be a backdoor around
+    /// what strict mode exists to prevent.
+    private func handleRelocalized(_ globalWordIdx: Int) {
+        guard settings.strictMode, let gate = strictGateGlobalWordIdx, globalWordIdx < gate else { return }
+        progressTracker.clearStrictGate()
+        strictGateGlobalWordIdx = nil
     }
 
     private func dispatch(_ snapshot: RecitationProgressSnapshot) {

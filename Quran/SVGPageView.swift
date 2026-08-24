@@ -16,16 +16,30 @@ struct MushafPageView: NSViewRepresentable {
     /// Live-recitation word masking, driven by `RecitationProgress`.
     /// `.unmasked` (the default) leaves every word at its normal color -
     /// no recitation session in progress, or this page's ayahs are already
-    /// fully revealed for the session.
-    var wordDisplayState: WordDisplayState = .unmasked
+    /// fully revealed for the session - except any word in `wrongIDs`,
+    /// which stays red regardless.
+    var wordDisplayState: WordDisplayState = .unmasked(wrongIDs: [])
 
     enum WordDisplayState: Equatable {
-        case unmasked
+        /// `wrongIDs` is the session's full mistake set, not filtered to
+        /// this page - harmless, since each page's WKWebView only ever
+        /// contains its own `md-word-*` ids, so ids belonging to other
+        /// pages simply match nothing here.
+        case unmasked(wrongIDs: Set<String>)
         /// `revealedIDs` empty means every word on the page is hidden
         /// (not yet reached). `highlightedIDs` (a slot can be more than one
         /// SVG glyph - see `WordSlot.svgElementIds`) are always also
-        /// included in `revealedIDs`.
-        case masked(revealedIDs: Set<String>, highlightedIDs: Set<String>)
+        /// included in `revealedIDs`. `wrongIDs` is red regardless of
+        /// whether it's also in `revealedIDs`/`highlightedIDs` - see
+        /// `__applyWordMask`'s precedence (highlighted > wrong > revealed).
+        /// `gatedIDs` (strict mode only - see `RecitationProgressTracker.
+        /// gatedWordIDs`) is deliberately NOT in `revealedIDs`: the word
+        /// itself stays hidden, but its placeholder line draws red instead
+        /// of the ordinary grey, and takes precedence over `wrongIDs` for
+        /// visibility (a gated word may already be in `wrongIDs` from its
+        /// own mismatch, but must stay hidden - not shown red - until it's
+        /// actually corrected).
+        case masked(revealedIDs: Set<String>, highlightedIDs: Set<String>, wrongIDs: Set<String>, gatedIDs: Set<String>)
     }
 
     /// The only tunable knob for pages 1-2 - not used by any other page.
@@ -42,12 +56,15 @@ struct MushafPageView: NSViewRepresentable {
     /// script for what actually runs.
     private func wordMaskJSCall(for state: WordDisplayState) -> String {
         switch state {
-        case .unmasked:
-            return "__clearWordMask();"
-        case .masked(let revealedIDs, let highlightedIDs):
+        case .unmasked(let wrongIDs):
+            let wrongJSON = jsonLiteral(Array(wrongIDs))
+            return "__clearWordMask(\(wrongJSON));"
+        case .masked(let revealedIDs, let highlightedIDs, let wrongIDs, let gatedIDs):
             let revealedJSON = jsonLiteral(Array(revealedIDs))
             let highlightedJSON = jsonLiteral(Array(highlightedIDs))
-            return "__applyWordMask(\(revealedJSON), \(highlightedJSON));"
+            let wrongJSON = jsonLiteral(Array(wrongIDs))
+            let gatedJSON = jsonLiteral(Array(gatedIDs))
+            return "__applyWordMask(\(revealedJSON), \(highlightedJSON), \(wrongJSON), \(gatedJSON));"
         }
     }
 
@@ -208,12 +225,16 @@ struct MushafPageView: NSViewRepresentable {
             return seg;
         }
 
-        function __applyWordMask(revealedIds, highlightedIds) {
+        function __applyWordMask(revealedIds, highlightedIds, wrongIds, gatedIds) {
             __initWordGeometry();
             var revealedSet = {};
             for (var i = 0; i < revealedIds.length; i++) { revealedSet[revealedIds[i]] = true; }
             var highlightedSet = {};
             for (var h = 0; h < highlightedIds.length; h++) { highlightedSet[highlightedIds[h]] = true; }
+            var wrongSet = {};
+            for (var w = 0; w < wrongIds.length; w++) { wrongSet[wrongIds[w]] = true; }
+            var gatedSet = {};
+            for (var g = 0; g < gatedIds.length; g++) { gatedSet[gatedIds[g]] = true; }
             function isHidden(id) { return !revealedSet[id] && !highlightedSet[id]; }
             // Only snap to the shared column edge when the line's own
             // outermost item is already within this tolerance of it -
@@ -228,13 +249,30 @@ struct MushafPageView: NSViewRepresentable {
                 var line = __wordLines[li];
                 var n = line.items.length;
                 var used = 0;
-                var runStart = null, runEnd = null;
+                var runStart = null, runEnd = null, runGated = false;
                 for (var k = 0; k < n; k++) {
                     var item = line.items[k];
-                    if (item.kind === 'word' && isHidden(item.id)) {
+                    var hidden = item.kind === 'word' && isHidden(item.id);
+                    var itemGated = hidden && !!gatedSet[item.id];
+                    // A gated word's line segment is drawn red, distinct
+                    // from the ordinary grey of text simply not reached
+                    // yet - so a run breaks not just where hidden text
+                    // ends, but also at a gated/non-gated boundary within
+                    // a hidden stretch.
+                    if (hidden && runStart !== null && itemGated !== runGated) {
+                        var midSeg = __poolSegment(line, used++);
+                        midSeg.setAttribute('x1', runStart);
+                        midSeg.setAttribute('x2', runEnd);
+                        midSeg.setAttribute('stroke', runGated ? '#E5484D' : '#C7C2B8');
+                        midSeg.setAttribute('stroke-opacity', runGated ? '0.55' : '0.2');
+                        midSeg.style.visibility = 'visible';
+                        runStart = null;
+                    }
+                    if (hidden) {
                         if (runStart === null) {
                             runStart = (k === 0 && item.x - __columnLeft < edgeSnapTolerance)
                                 ? __columnLeft : item.x;
+                            runGated = itemGated;
                         }
                         runEnd = (k === n - 1 && __columnRight - item.right < edgeSnapTolerance)
                             ? __columnRight : item.right;
@@ -242,6 +280,8 @@ struct MushafPageView: NSViewRepresentable {
                         var seg = __poolSegment(line, used++);
                         seg.setAttribute('x1', runStart);
                         seg.setAttribute('x2', runEnd);
+                        seg.setAttribute('stroke', runGated ? '#E5484D' : '#C7C2B8');
+                        seg.setAttribute('stroke-opacity', runGated ? '0.55' : '0.2');
                         seg.style.visibility = 'visible';
                         runStart = null;
                     }
@@ -250,6 +290,8 @@ struct MushafPageView: NSViewRepresentable {
                     var lastSeg = __poolSegment(line, used++);
                     lastSeg.setAttribute('x1', runStart);
                     lastSeg.setAttribute('x2', runEnd);
+                    lastSeg.setAttribute('stroke', runGated ? '#E5484D' : '#C7C2B8');
+                    lastSeg.setAttribute('stroke-opacity', runGated ? '0.55' : '0.2');
                     lastSeg.style.visibility = 'visible';
                 }
                 for (var p = used; p < line.pool.length; p++) {
@@ -260,9 +302,24 @@ struct MushafPageView: NSViewRepresentable {
             var all = document.querySelectorAll('.source [id^="md-word-"]');
             for (var j = 0; j < all.length; j++) {
                 var el = all[j];
-                if (highlightedSet[el.id]) {
+                if (gatedSet[el.id]) {
+                    // Still wrong, not yet corrected - the word itself
+                    // stays hidden (only its line shows red) even though
+                    // it may already be in wrongSet from its own mismatch.
+                    el.style.visibility = 'hidden';
+                } else if (highlightedSet[el.id]) {
                     el.style.visibility = 'visible';
                     el.style.fill = '#FFC94A';
+                } else if (wrongSet[el.id] && revealedSet[el.id]) {
+                    // `wrongSet` alone isn't enough here (unlike
+                    // `__clearWordMask`'s already-passed pages, which have
+                    // no reveal frontier at all) - a word whose gate got
+                    // force-released by a backward relocalization, never
+                    // actually corrected, must stay hidden rather than
+                    // floating as a red glyph disconnected from wherever
+                    // the reveal frontier actually is now.
+                    el.style.visibility = 'visible';
+                    el.style.fill = '#E5484D';
                 } else if (revealedSet[el.id]) {
                     el.style.visibility = 'visible';
                     el.style.fill = '';
@@ -271,11 +328,14 @@ struct MushafPageView: NSViewRepresentable {
                 }
             }
         }
-        function __clearWordMask() {
+        function __clearWordMask(wrongIds) {
+            wrongIds = wrongIds || [];
+            var wrongSet = {};
+            for (var w = 0; w < wrongIds.length; w++) { wrongSet[wrongIds[w]] = true; }
             var all = document.querySelectorAll('.source [id^="md-word-"]');
             for (var i = 0; i < all.length; i++) {
                 all[i].style.visibility = '';
-                all[i].style.fill = '';
+                all[i].style.fill = wrongSet[all[i].id] ? '#E5484D' : '';
             }
             if (__wordLines) {
                 for (var li = 0; li < __wordLines.length; li++) {

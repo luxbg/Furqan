@@ -40,9 +40,93 @@ struct PhonemeSettings {
     var backtrackWindowPages: Int = 2
     var mushafTotalPages: Int = 604
     // How many words apart a candidate match must be from where the
-    // aligner currently is before it's treated as a genuine backtrack
-    // rather than an ordinary mismatch/ASR noise near the same spot.
-    var backtrackMinWordGap: Int = 5
+    // aligner currently is before `rerouteIfBacktrack` treats it as a
+    // genuine backtrack rather than an ordinary mismatch/ASR noise near the
+    // same spot. Kept at 0 (any distance counts) deliberately, by product
+    // choice: this path only ever runs *after* real mismatch evidence has
+    // accumulated (`suspectBuffer`), so it stays maximally responsive to a
+    // close, genuine backtrack (a reciter redoing the last word or short
+    // phrase) even though that does mean a rare false positive is possible
+    // here too -- confirmed reproducible (not just theoretical): a word
+    // settling via its droppable-trailing fast path can leave a few
+    // leftover characters that transiently bleed into the next word's own
+    // mismatch before self-correcting, and if that transient blob happens
+    // to reach `minTriggerChars` it can trigger a spurious nearby reroute.
+    // Accepted as the cost of staying responsive at close range, rather
+    // than raised the way `ambientBacktrackMinWordGap` below was.
+    var backtrackMinWordGap: Int = 0
+    /// Same idea, but for `considerAmbientBacktrack`: unlike the reroute
+    /// path above, this runs continuously on *every* audio chunk with zero
+    /// corroborating mismatch evidence at all, so a coincidental nearby
+    /// fuzzy match can commit as a "backtrack" during completely ordinary,
+    /// mistake-free forward recitation -- confirmed via a live capture
+    /// (2:14, reciting straight through words 9-12) where this happened at
+    /// gap 0, re-processing word 9 a second time (and getting it wrong the
+    /// second time, since the replay was never actually a repeat). Unlike
+    /// `backtrackMinWordGap`, there's no evidence-based case for staying
+    /// responsive here, so this stays at a safe floor -- a genuine close
+    /// backtrack the ambient path misses this way still gets caught a beat
+    /// later by `rerouteIfBacktrack` once the resulting mismatch(es)
+    /// accumulate (see that field's own doc for its own responsiveness
+    /// choice).
+    var ambientBacktrackMinWordGap: Int = 0
+
+    // Ambient backtrack: unlike `rerouteIfBacktrack` (which only searches
+    // after several mismatched words have already accumulated), this runs
+    // continuously against the raw recognized-character stream, windowed to
+    // the same backtrack range, so a genuine backtrack is reflected
+    // instantly rather than after a lag. Thresholds are stricter than the
+    // base `confidenceThreshold`/`marginThreshold` since this runs with no
+    // prior mismatch evidence at all.
+    var ambientBacktrackEnabled: Bool = true
+    /// Skips the ambient search entirely whenever the aligner's own rolling
+    /// confidence is already this high -- i.e. forward tracking is plainly
+    /// succeeding, so there's nothing to second-guess. Without this, the
+    /// search runs unconditionally on every chunk and can find a
+    /// perfectly-confident match *somewhere else* in the backtrack window
+    /// even when the current position already explains the audio just
+    /// fine -- confirmed via a live capture in Al-Ma'idah: ayah 1 and ayah 2
+    /// both open with the identical phrase "يَـٰٓأَيُّهَا ٱلَّذِينَ
+    /// ءَامَنُوا۟", so moving from 5:1 straight into 5:2 recites that
+    /// phrase again, matching 5:2's own expected opening perfectly (no
+    /// mismatch, no confidence collapse) -- yet the ambient search still
+    /// found 5:1's *own* identical opening, far outside
+    /// `ambientBacktrackMinWordGap`'s reach (5:1 is 22 words long), and
+    /// jumped backward to it. High on purpose (0.95, not e.g. 0.8): this
+    /// only needs to rule out "everything's fine," not attempt any real
+    /// confidence judgment of its own -- `aligner.rollingSimilarityEma`
+    /// dips well below this after even one imperfect word (see its own
+    /// EMA formula), so a genuine backtrack's mismatched audio still opens
+    /// the search back up within a word or two, not noticeably slower than
+    /// today.
+    var ambientSkipWhenConfidenceAtLeast: Double = 0.95
+    var ambientSearchChars: Int = 8
+    var ambientMinChars: Int = 8
+    var ambientConfidenceThreshold: Double = 0.80
+    var ambientMarginThreshold: Double = 0.12
+    /// How close two candidates' similarity scores need to be to count as
+    /// "similarly good" for the closest/latest tie-break.
+    var ambientTieBreakSimilarityDelta: Double = 0.05
+    /// Words of grace right after an ambient jump commits during which
+    /// `considerAmbientBacktrack` doesn't re-search at all -- the aligner is
+    /// already tracking forward off a full DP alignment of everything
+    /// recited since the jump, which is far stronger evidence than another
+    /// raw tail-window fuzzy search could offer. (Used to also allow a
+    /// "refinement" to a farther candidate within this window -- removed
+    /// after it was confirmed to occasionally mis-fire a spurious second
+    /// jump moments after a perfectly good first one, off a tail window
+    /// that had already drifted onto unrelated, currently-being-recited
+    /// content.)
+    var ambientRefineMaxWords: Int = 5
+
+    // Strict mode: when on, both the mushaf display and the ASR pipeline
+    // itself hold at a mismatched (or live-skipped) word until it's said
+    // correctly - the pipeline stops recognizing anything past it, only
+    // re-expecting that same word, though a genuine backtrack to an earlier
+    // point still releases it (see RecitationChecker.pinToGate/
+    // RecitationProgressTracker). Not yet user-facing - a code-level toggle
+    // for now.
+    var strictMode: Bool = true
 
     static let `default` = PhonemeSettings()
 }

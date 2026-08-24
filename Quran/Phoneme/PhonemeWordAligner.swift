@@ -22,6 +22,17 @@ struct PhonemeWordCheckResult {
     /// previous settled result (a muqatta'at split) -- consumers must treat
     /// a `wordTextContinuesPrevious` run as one logical word.
     let wordTextContinuesPrevious: Bool
+    /// Only meaningful when `status == .deleted`: true when this word was
+    /// never recited because the session simply ended before reaching it
+    /// (`RecitationChecker.finish()`'s forced flush), as opposed to a live,
+    /// mid-recitation skip the DP alignment caught in real time (the
+    /// reciter's audio jumped straight from one word to a later one, with
+    /// nothing matching this word's expected phonemes in between). Set by
+    /// `RecitationChecker.onWordSettled`, not at construction -- always
+    /// `false` here. Consumers (see `RecitationProgressTracker`) use this to
+    /// gate strict mode on a genuine live skip without also gating on
+    /// "the reciter just stopped for now".
+    var isSessionEndDeletion = false
 }
 
 private struct PendingWord {
@@ -346,7 +357,7 @@ final class IncrementalWordAligner {
         let altLastRow = altResult.dp[actualBuffer.count]
         let altJStar = PhonemeAlignDP.argmin(altLastRow, preferringBoundary: altBoundary)
         guard altJStar - altBoundary >= settings.settleLookaheadChars else { return false }
-        print("[aligner] \(logLabel) fast path settled word \(firstWord.entry.globalWordIdx) (surah \(firstWord.entry.surah) ayah \(firstWord.entry.ayah) word \(firstWord.entry.localWordIdx))")
+//        print("[aligner] \(logLabel) fast path settled word \(firstWord.entry.globalWordIdx) (surah \(firstWord.entry.surah) ayah \(firstWord.entry.ayah) word \(firstWord.entry.localWordIdx))")
 
         let path = PhonemeAlignDP.traceback(altResult.bp, actualBuffer.count, altJStar)
         var actualChars: [Unicode.Scalar] = []
@@ -415,35 +426,66 @@ final class IncrementalWordAligner {
         let expectedPhonemes = firstWord.entry.phonemeText
         let isolatedPhonemes = firstWord.entry.isolatedPhonemeText
         let continuedPhonemes = firstWord.entry.continuedPhonemeText
+        let waslElidedForms = PhonemeNormalize.waslElidedForms(phonemeText: expectedPhonemes, wordText: firstWord.entry.wordText)
         var matchedIsolated = false
         var matchedContinued = false
+        var matchedWaslElided: String?
 
-        if let actual = actualPhonemes, !PhonemeNormalize.phonemesMatch(expectedPhonemes, actual.scalarString) {
-            // A word recited with a brief pause right after it comes out in
-            // its own standalone pronunciation, which can differ from the
-            // corpus's connected-recitation form. Check that first.
-            if let isolated = isolatedPhonemes, PhonemeNormalize.phonemesMatch(isolated, actual.scalarString) {
-                matchedIsolated = true
-            } else if let continued = continuedPhonemes, PhonemeNormalize.phonemesMatch(continued, actual.scalarString) {
+        // Checks a candidate against all of this word's own valid forms --
+        // connected (default), standalone/paused, ayah-final continued, and
+        // hamzat-wasl-elided -- same priority order either way. Shared by
+        // the raw `actual` check and, below, each bleed-cleanup candidate:
+        // a word recited with a brief pause right after it comes out in its
+        // own standalone pronunciation, which can differ from the corpus's
+        // connected-recitation form (or, at an ayah's end, its continued
+        // form differs from the always-paused `phoneme_text`) -- and that's
+        // just as true of a candidate that only became legible once a
+        // previous word's bled-forward tail was stripped off the front.
+        func matchForms(_ candidate: [Unicode.Scalar]) -> (matched: Bool, isolated: Bool, continued: Bool, waslElided: String?) {
+            let text = candidate.scalarString
+            if PhonemeNormalize.phonemesMatch(expectedPhonemes, text) {
+                return (true, false, false, nil)
+            }
+            if let isolated = isolatedPhonemes, PhonemeNormalize.phonemesMatch(isolated, text) {
+                return (true, true, false, nil)
+            }
+            if let continued = continuedPhonemes, PhonemeNormalize.phonemesMatch(continued, text) {
                 // The mirror image, for an ayah's own last word: phoneme_text
                 // there always assumes a pause, but continuing straight into
                 // the next ayah is equally valid and some words' forms
                 // genuinely differ (e.g. tanween fatha).
-                matchedContinued = true
+                return (true, false, true, nil)
+            }
+            if let waslElided = waslElidedForms.first(where: { PhonemeNormalize.phonemesMatch($0, text) }) {
+                // This word's own hamzat-wasl elided (see
+                // waslElidedForms) -- a reciter who continued straight out
+                // of the previous word instead of pausing before this one.
+                return (true, false, false, waslElided)
+            }
+            return (false, false, false, nil)
+        }
+
+        if let actual = actualPhonemes {
+            let rawMatch = matchForms(actual)
+            if rawMatch.matched {
+                matchedIsolated = rawMatch.isolated
+                matchedContinued = rawMatch.continued
+                matchedWaslElided = rawMatch.waslElided
             } else {
                 // Repeat-prefix stripping is a fallback for an otherwise-
                 // mismatched word, never applied to content that already
-                // matches. Only adopt the stripped version if it actually
-                // produces a match.
-                let stripped = stripRepeatedPrefix(actual)
-                let debled = stripConnectedTailBleed(actual)
-                let bled = stripLiaisonBleed(actual)
-                if stripped != actual, PhonemeNormalize.phonemesMatch(expectedPhonemes, stripped.scalarString) {
-                    actualPhonemes = stripped.isEmpty ? nil : stripped
-                } else if debled != actual, PhonemeNormalize.phonemesMatch(expectedPhonemes, debled.scalarString) {
-                    actualPhonemes = debled.isEmpty ? nil : debled
-                } else if bled != actual, PhonemeNormalize.phonemesMatch(expectedPhonemes, bled.scalarString) {
-                    actualPhonemes = bled.isEmpty ? nil : bled
+                // matches. Only adopt a candidate that actually produces a
+                // match, against any of this word's own forms above --
+                // not just the default connected one.
+                let candidates = [stripRepeatedPrefix(actual), stripConnectedTailBleed(actual), stripLiaisonBleed(actual)]
+                for candidate in candidates where candidate != actual {
+                    let m = matchForms(candidate)
+                    guard m.matched else { continue }
+                    actualPhonemes = candidate.isEmpty ? nil : candidate
+                    matchedIsolated = m.isolated
+                    matchedContinued = m.continued
+                    matchedWaslElided = m.waslElided
+                    break
                 }
             }
         }
@@ -453,6 +495,8 @@ final class IncrementalWordAligner {
             similarityReference = isolated
         } else if matchedContinued, let continued = continuedPhonemes {
             similarityReference = continued
+        } else if let waslElided = matchedWaslElided {
+            similarityReference = waslElided
         } else {
             similarityReference = expectedPhonemes
         }
@@ -466,7 +510,7 @@ final class IncrementalWordAligner {
         let status: PhonemeWordStatus
         if actualPhonemes == nil {
             status = .deleted
-        } else if matchedIsolated || matchedContinued || PhonemeNormalize.phonemesMatch(expectedPhonemes, actualPhonemes!.scalarString) {
+        } else if matchedIsolated || matchedContinued || matchedWaslElided != nil || PhonemeNormalize.phonemesMatch(expectedPhonemes, actualPhonemes!.scalarString) {
             status = .match
         } else {
             status = .mismatch

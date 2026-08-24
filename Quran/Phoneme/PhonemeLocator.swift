@@ -42,10 +42,10 @@ private func scoreCandidates(corpus: PhonemeCorpus, query: [Unicode.Scalar], set
     return scored
 }
 
-private func passesConfidenceGate(_ scored: [ScoredCandidate], settings: PhonemeSettings) -> Bool {
+private func passesConfidenceGate(_ scored: [ScoredCandidate], confidenceThreshold: Double, marginThreshold: Double) -> Bool {
     guard let top = scored.first else { return false }
     let second = scored.count > 1 ? scored[1].similarity : 0.0
-    return top.similarity >= settings.confidenceThreshold && (top.similarity - second) >= settings.marginThreshold
+    return top.similarity >= confidenceThreshold && (top.similarity - second) >= marginThreshold
 }
 
 /// One-shot confident match of a complete (not growing) query string within
@@ -67,9 +67,83 @@ func phonemeSearchWindow(
         let idx = corpus.globalWordIdx(forCharOffset: c.charOffset)
         return idx >= minGlobalWordIdx && (maxGlobalWordIdx == nil || idx <= maxGlobalWordIdx!)
     }
-    guard passesConfidenceGate(inRange, settings: settings) else { return nil }
+    guard passesConfidenceGate(inRange, confidenceThreshold: settings.confidenceThreshold, marginThreshold: settings.marginThreshold) else { return nil }
     let globalWordIdx = corpus.globalWordIdx(forCharOffset: inRange[0].charOffset)
     return PhonemeLocalizeResult(globalWordIdx: globalWordIdx, similarity: inRange[0].similarity, matchedText: query)
+}
+
+struct PhonemeCandidateMatch {
+    let globalWordIdx: Int
+    let similarity: Double
+    let matchedText: String
+}
+
+/// Like `phonemeSearchWindow`, but (a) searches only the
+/// `[minGlobalWordIdx, maxGlobalWordIdx]` slice of the corpus, not the
+/// whole Quran, and (b) returns every candidate within `similarityDelta` of
+/// the top score, not just the winner, so the caller can apply its own
+/// tie-break (e.g. preferring the closest/latest candidate) instead of
+/// blindly taking whichever one happened to score highest.
+///
+/// Unlike `phonemeSearchWindow`/`scoreCandidates` (which run
+/// `PhonemeFuzzySearch.findNearMatches` against the *entire*
+/// `corpus.corpusScalars` and only filter to the window afterward -- fine
+/// for a check that only runs occasionally, too costly to run on every
+/// audio chunk), this slices `corpus.corpusScalars` down to just the
+/// window's character range *before* searching, using `corpus.charOffsets`
+/// to find the slice bounds. Cheaper (searches only the window, not the
+/// whole Quran), and structurally can never match a passage outside the
+/// window at all, unlike filter-after-the-fact.
+func phonemeSearchWindowCandidates(
+    corpus: PhonemeCorpus,
+    query: String,
+    settings: PhonemeSettings,
+    minGlobalWordIdx: Int,
+    maxGlobalWordIdx: Int?,
+    confidenceThreshold: Double,
+    marginThreshold: Double,
+    similarityDelta: Double,
+    maxCandidates: Int = 5
+) -> [PhonemeCandidateMatch]? {
+    let queryScalars = query.phonemeScalars
+    guard !queryScalars.isEmpty else { return nil }
+    guard minGlobalWordIdx >= 0, minGlobalWordIdx < corpus.charOffsets.count else { return nil }
+
+    let startOffset = corpus.charOffsets[minGlobalWordIdx]
+    let endOffset: Int
+    if let maxGlobalWordIdx {
+        let nextIdx = maxGlobalWordIdx + 1
+        endOffset = nextIdx < corpus.charOffsets.count ? corpus.charOffsets[nextIdx] : corpus.corpusCharCount
+    } else {
+        endOffset = corpus.corpusCharCount
+    }
+    guard startOffset < endOffset else { return nil }
+
+    let windowScalars = Array(corpus.corpusScalars[startOffset..<endOffset])
+    let maxLDist = min(max(1, Int((Double(queryScalars.count) * settings.maxLDistRatio).rounded(.towardZero))), settings.maxLDistCap)
+    let matches = PhonemeFuzzySearch.findNearMatches(pattern: queryScalars, in: windowScalars, maxLDist: maxLDist)
+    guard !matches.isEmpty else { return nil }
+
+    var scored = matches.map { m -> (globalWordIdx: Int, similarity: Double) in
+        let denom = max(queryScalars.count, m.end - m.start)
+        let sim = 1.0 - Double(m.dist) / Double(denom)
+        let idx = corpus.globalWordIdx(forCharOffset: startOffset + m.start)
+        return (idx, sim)
+    }
+    scored.sort { $0.similarity > $1.similarity }
+
+    guard let top = scored.first else { return nil }
+    let second = scored.count > 1 ? scored[1].similarity : 0.0
+    guard top.similarity >= confidenceThreshold, (top.similarity - second) >= marginThreshold else { return nil }
+
+    var seen = Set<Int>()
+    var results: [PhonemeCandidateMatch] = []
+    for c in scored where top.similarity - c.similarity <= similarityDelta {
+        guard seen.insert(c.globalWordIdx).inserted else { continue }
+        results.append(PhonemeCandidateMatch(globalWordIdx: c.globalWordIdx, similarity: c.similarity, matchedText: query))
+        if results.count >= maxCandidates { break }
+    }
+    return results.isEmpty ? nil : results
 }
 
 /// Localizes a recitation from a raw, growing phoneme character stream. The
@@ -151,14 +225,14 @@ final class IncrementalAyahLocator {
         let inRangeCandidates = scored.filter { inRange(corpus.globalWordIdx(forCharOffset: $0.charOffset)) }
 
         guard !inRangeCandidates.isEmpty else {
-            if passesConfidenceGate(scored, settings: settings) {
+            if passesConfidenceGate(scored, confidenceThreshold: settings.confidenceThreshold, marginThreshold: settings.marginThreshold) {
                 let topIdx = corpus.globalWordIdx(forCharOffset: scored[0].charOffset)
                 lastRejection = topIdx < minGlobalWordIdx ? .beforeFloor : .beyondCeiling
             }
             return nil
         }
 
-        guard passesConfidenceGate(inRangeCandidates, settings: settings) else { return nil }
+        guard passesConfidenceGate(inRangeCandidates, confidenceThreshold: settings.confidenceThreshold, marginThreshold: settings.marginThreshold) else { return nil }
         let globalWordIdx = corpus.globalWordIdx(forCharOffset: inRangeCandidates[0].charOffset)
         return PhonemeLocalizeResult(globalWordIdx: globalWordIdx, similarity: inRangeCandidates[0].similarity, matchedText: buffer)
     }
