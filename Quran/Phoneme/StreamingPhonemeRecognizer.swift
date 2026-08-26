@@ -26,7 +26,7 @@ nonisolated final class StreamingPhonemeRecognizer {
     private var emitted = 0
 
     init(sampleRate: Int = 16_000, numThreads: Int32 = 2) {
-        guard let modelPath = Bundle.main.path(forResource: "phoneme_model.int8", ofType: "onnx"),
+        guard let modelPath = Bundle.main.path(forResource: "phoneme_model", ofType: "onnx"),
               let tokensPath = Bundle.main.path(forResource: "phoneme_tokens", ofType: "txt") else {
             fatalError("phoneme ASR model files missing from bundle")
         }

@@ -130,6 +130,8 @@ nonisolated final class RecitationSession {
     /// and the DP alignment run.
     private func processSamples(_ samples: [Float]) {
         guard let recognizer, let checker else { return }
+        let peak = samples.map { abs($0) }.max() ?? 0
+//        print("TEMP-DEBUG samples=\(samples.count) peak=\(peak)")
         recognizer.feedAudio(samples: samples)
         let tokens = recognizer.pollNewTokens()
         guard !tokens.isEmpty else { return }
@@ -180,7 +182,7 @@ nonisolated final class RecitationSession {
         let label = "[t=\(elapsed())s] \(result.surah):\(result.ayah) word \(result.wordIndex)"
         switch result.status {
         case .match:
-            print("  \u{2713} \(label): \"\(result.wordText ?? result.expectedPhonemes)\"")
+            print("  \u{2713} \(label): \"\(result.wordText ?? result.expectedPhonemes)\" expected=\"\(result.expectedPhonemes)\" actual=\"\(result.actualPhonemes ?? "?")\"")
         case .mismatch:
             print("  \u{2717} \(label): expected \"\(result.expectedPhonemes)\" got \"\(result.actualPhonemes ?? "?")\"")
         case .deleted:

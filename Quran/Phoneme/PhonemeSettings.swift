@@ -70,6 +70,27 @@ struct PhonemeSettings {
     /// accumulate (see that field's own doc for its own responsiveness
     /// choice).
     var ambientBacktrackMinWordGap: Int = 0
+    /// `rerouteIfBacktrack`'s own thresholds while a strict-mode pin is
+    /// holding -- much stricter than the base `confidenceThreshold`/
+    /// `marginThreshold` above (even stricter than the ambient search's own
+    /// 0.80/0.12). While pinned, `suspectBuffer` keeps absorbing whatever the
+    /// reciter says next (still re-attributed to the pinned word every
+    /// cycle, not fresh evidence about it -- see the rescue in
+    /// `onWordSettled`), and the search window is full of already-*passed*,
+    /// already-correct recitation from earlier this same session -- prime
+    /// conditions for a coincidental, low-margin match under the base
+    /// thresholds. Confirmed live: with the base thresholds, a post-mismatch
+    /// buffer chained through *three* separate spurious relocalizations back
+    /// into an already-fully-recited earlier ayah within one replay, each
+    /// jump's own evidence just barely clearing 0.72/0.08. A genuine
+    /// backtrack while pinned is still just as detectable here -- a reciter
+    /// deliberately restarting from an earlier point, or a correct retake
+    /// that got DP-merged with noise right in front of it, both produce
+    /// audio that matches their true source at very high confidence, not a
+    /// borderline one -- so raising the bar costs essentially nothing but
+    /// false positives.
+    var pinnedBacktrackConfidenceThreshold: Double = 0.92
+    var pinnedBacktrackMarginThreshold: Double = 0.2
 
     // Ambient backtrack: unlike `rerouteIfBacktrack` (which only searches
     // after several mismatched words have already accumulated), this runs

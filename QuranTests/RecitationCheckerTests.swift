@@ -20,6 +20,29 @@ final class RecitationCheckerTests: XCTestCase {
         corpus.globalWords.first { $0.surah == surah && $0.ayah == ayah && $0.localWordIdx == 0 }!.globalWordIdx
     }
 
+    /// Minimal synthetic corpus (not the real bundled one) -- mirrors
+    /// `PhonemeWordAlignerTests.makeCorpus`, needed here to control a
+    /// word's isolated/continued forms exactly for the bleed-context test
+    /// below (the real corpus doesn't give that kind of precise control).
+    private func makeSyntheticCorpus(words: [String], isolated: [String?]? = nil) -> PhonemeCorpus {
+        let iso = isolated ?? Array(repeating: nil, count: words.count)
+        let entries = zip(words, iso).enumerated().map { i, pair -> PhonemeGlobalWordEntry in
+            PhonemeGlobalWordEntry(
+                globalWordIdx: i, surah: 1, ayah: 1, localWordIdx: i,
+                phonemeText: pair.0, wordText: nil,
+                isolatedPhonemeText: pair.1, continuedPhonemeText: nil,
+                wordTextContinuesPrevious: false
+            )
+        }
+        var offsets: [Int] = []
+        var cursor = 0
+        for w in words {
+            offsets.append(cursor)
+            cursor += w.phonemeScalars.count
+        }
+        return PhonemeCorpus(ayahsInOrder: [], globalWords: entries, corpusText: words.joined(), charOffsets: offsets)
+    }
+
     /// 32:8's last corpus phoneme-word used to be one indivisible unit
     /// covering multiple written words - it must settle as independent
     /// per-word results through the full pipeline (localization included).
@@ -332,21 +355,35 @@ final class RecitationCheckerTests: XCTestCase {
         let word0Idx = firstGlobalIdx(112, 2)
         checker.feedTokens(tokensFor(ayahWords(112, 1).joined()))
         // 112:2 word 0 wrong (garbage), then keep going straight through
-        // the rest of 112:2 and into 112:3 as if nothing happened.
+        // the rest of 112:2 and into 112:3 as if nothing happened -- one
+        // word per `feedTokens` call, like real streaming audio, so a pin
+        // cycle's accepted small-fragment loss (see `pinToGate`'s own doc)
+        // never eats more than one word's worth in a single synchronous
+        // call the way one giant blob could.
         checker.feedTokens(tokensFor("ططططططططططططططط"))
-        checker.feedTokens(tokensFor((ayahWords(112, 2).dropFirst() + ayahWords(112, 3)).joined()))
+        for word in Array(ayahWords(112, 2).dropFirst()) + ayahWords(112, 3) {
+            checker.feedTokens(tokensFor(word))
+        }
         checker.finish()
 
         XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .mismatch }, "\(results)")
-        // Nothing past the mismatched word may ever settle while it's
-        // still unresolved -- the rest of the recitation must instead
+        // Nothing past the mismatched word may ever settle *live* while
+        // it's still unresolved -- the rest of the recitation must instead
         // keep getting DP-aligned against that word itself (repeatedly
         // mismatching/skipping there), not attributed to words further on.
-        XCTAssertFalse(results.contains { $0.globalWordIndex > word0Idx }, "\(results)")
+        // `isSessionEndDeletion` entries are excluded: `finish()`'s forced
+        // flush still has to drain whatever's left pending in the aligner's
+        // lookahead window when the session ends, regardless of whether it
+        // was ever actually reached live -- that's expected housekeeping,
+        // not a recognition leak (see `PhonemeWordCheckResult.isSessionEndDeletion`).
+        XCTAssertFalse(results.contains { $0.globalWordIndex > word0Idx && !$0.isSessionEndDeletion }, "\(results)")
     }
 
     /// Once the halted word is finally said correctly, recognition resumes
-    /// normally from right after it.
+    /// normally from right after it. A lone garbage word alone doesn't
+    /// settle by itself (the DP needs more audio to confirm the boundary --
+    /// unrelated to strict mode), so this checks the whole picture after
+    /// feeding the correction, not mid-way through.
     func testStrictModeResumesOnceTheHaltedWordIsCorrected() {
         var results: [PhonemeWordCheckResult] = []
         var settings = PhonemeSettings.default
@@ -355,15 +392,134 @@ final class RecitationCheckerTests: XCTestCase {
 
         let word0Idx = firstGlobalIdx(112, 2)
         checker.feedTokens(tokensFor(ayahWords(112, 1).joined()))
-        checker.feedTokens(tokensFor("ططططططططططططططط"))
-        XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .mismatch }, "\(results)")
-
-        // Say the rest of the recitation correctly, starting with the word just missed.
-        checker.feedTokens(tokensFor((ayahWords(112, 2) + ayahWords(112, 3)).joined()))
+        // Short garbage (roughly one word's worth), not a long run -- a
+        // long garbage run plus the first few characters of the very next
+        // word can land in the same internal `feedChunkChars` window and
+        // settle as a single oversized mismatch blobbing them together
+        // (confirmed: this happens even feeding everything in one call,
+        // independent of strict mode/pinning -- an existing DP
+        // segmentation characteristic, not something to paper over here).
+        checker.feedTokens(tokensFor("طططط"))
+        for word in ayahWords(112, 2) + ayahWords(112, 3) {
+            checker.feedTokens(tokensFor(word))
+        }
         checker.finish()
 
+        XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .mismatch }, "\(results)")
         XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .match }, "\(results)")
         XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx + 1 }, "recognition must resume past the corrected word: \(results)")
+    }
+
+    /// Live-capture regression (originally observed at 30:22): a mismatched
+    /// word's own dropped-prefix attempt merged, via the pin's own
+    /// leftover-rescue, with the *correct* audio that came right after it
+    /// (the rest of the ayah, recited fine) into one `suspectBuffer` --
+    /// which then fuzzy-matched right back onto the pinned word itself.
+    /// With `backtrackMinWordGap` at 0 that self-match trivially passed as
+    /// a "genuine backtrack," releasing the pin and replaying straight
+    /// through the mismatched word -- so when the reciter then genuinely
+    /// retook it correctly, the checker was already past it and compared
+    /// the retake against whatever came next instead, exactly the "I said
+    /// it right and it's still stuck" bug reported live. Uses 112:3+112:4
+    /// (not the original 30:21+30:22) -- deliberately short, simple words
+    /// with none of 30:21's own unrelated droppable-trailing DP quirk on a
+    /// mid-ayah word, and none of 30:22/30:23's shared-opening-formula
+    /// coincidence (that's `testRepeatedOpeningPhraseAcrossAyahsIsNotMistakenForABacktrack`'s
+    /// own, separate concern) -- so this isolates just the self-match bug.
+    func testStrictModeIgnoresASelfReferentialRerouteBackOntoThePinnedWord() {
+        var results: [PhonemeWordCheckResult] = []
+        var settings = PhonemeSettings.default
+        settings.strictMode = true
+        let checker = RecitationChecker(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+
+        let word0Idx = firstGlobalIdx(112, 4)
+        for word in ayahWords(112, 3) {
+            checker.feedTokens(tokensFor(word))
+        }
+
+        // Drop the leading "وَ" so word 0 mismatches ("لَمْ" instead of
+        // "وَلَمْ") -- a real, partial recitation, not garbage, so it can
+        // plausibly fuzzy-match the corpus (unlike the pure-garbage tests
+        // above, which can't trigger this specific self-match bug) --
+        // "لَمْ" also happens to be 112:3's own word 0 verbatim, but it's
+        // short enough to never reach `minTriggerChars` on its own, so it
+        // can't independently trigger a reroute either way.
+        var word0Scalars = Array(ayahWords(112, 4)[0].phonemeScalars)
+        word0Scalars.removeFirst()
+        let droppedPrefixWord0 = String(String.UnicodeScalarView(word0Scalars))
+        checker.feedTokens(tokensFor(droppedPrefixWord0))
+        // Keep going as if nothing happened -- the rest of the ayah,
+        // recited correctly, one word per call like real streaming audio.
+        for word in ayahWords(112, 4).dropFirst() {
+            checker.feedTokens(tokensFor(word))
+        }
+
+        XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .mismatch }, "\(results)")
+        XCTAssertFalse(results.contains { $0.globalWordIndex > word0Idx && !$0.isSessionEndDeletion }, "the pin must not release itself on a fuzzy match back onto its own word: \(results)")
+
+        // The reciter's genuine retake -- must be recognized as word 0
+        // itself, not silently compared against whatever the pin would
+        // have wrongly moved on to.
+        checker.feedTokens(tokensFor(ayahWords(112, 4).joined()))
+        checker.finish()
+
+        XCTAssertTrue(results.contains { $0.globalWordIndex == word0Idx && $0.status == .match }, "the corrected word must actually be recognized as word 0: \(results)")
+    }
+
+    /// Live-capture regression: a genuine mismatch (unrelated to bleed)
+    /// opened a pin on word 3, whose *correct* pronunciation depends on a
+    /// legitimate cross-word tajweed bleed from word 2 (mirrors
+    /// `PhonemeWordAlignerTests.testDelayedTanweenNoonBleedIntoNextWordIsStripped`'s
+    /// own mechanism: word 2's missing trailing "ن" surfaces bled into the
+    /// next word's own leading audio instead). `pinToGate`'s own
+    /// `aligner.localize` used to unconditionally wipe the aligner's
+    /// bleed-stripping context every re-pin cycle -- so even a perfectly
+    /// correct retake (still carrying that same legitimate bleed, since
+    /// it's an ASR-decode-lag artifact of word 2, not something the
+    /// reciter controls) could never settle as a match, indistinguishable
+    /// from actually being stuck. Real report: "٣٠:٦ وعد" halted and never
+    /// released even after being said correctly.
+    func testStrictModePreservesBleedContextAcrossRepeatedPinCycles() {
+        let words = ["بسم", "الله", "قَلِۦۦلَن", "بَعدَهُم", "ءَحَدڇ"]
+        let isolated: [String?] = [nil, nil, "قَلِۦۦلَاا", nil, nil]
+        let syntheticCorpus = makeSyntheticCorpus(words: words, isolated: isolated)
+
+        var results: [PhonemeWordCheckResult] = []
+        var settings = PhonemeSettings.default
+        settings.strictMode = true
+        let checker = RecitationChecker(corpus: syntheticCorpus, settings: settings, onWordResult: { results.append($0) })
+
+        // Localizes, then settles word 2 forgiving its missing trailing "ن"
+        // against its own standalone form -- this is what leaves
+        // `lastSettledConnectedBleed` set to "ن" for whatever comes next.
+        checker.feedTokens(tokensFor([words[0], words[1], "قَلِۦۦلَ"].joined()))
+
+        // Word 3's first attempt: a near-miss (last letter swapped
+        // م -> ن), not garbage -- close enough to "بَعدَهُم" that the DP
+        // settles it as its own complete mismatch right away, without
+        // needing to wait on subsequent audio to tip the boundary decision
+        // (unrelated garbage never settles on its own -- it has nothing to
+        // anchor a boundary to until *something* resembling the expected
+        // word arrives, which would just blob the two together instead of
+        // giving this test the clean, separate first cycle it needs).
+        checker.feedTokens(tokensFor("بَعدَهُن"))
+
+        // The retake, in a separate call against the now re-pinned
+        // (reset) aligner: genuinely correct, but still carrying the same
+        // legitimate leading "ن" bleed from word 2 (an ASR-decode-lag
+        // artifact independent of what the reciter says now) -- must still
+        // settle as a match, the same way it would have on a fresh (never-
+        // pinned) aligner.
+        checker.feedTokens(tokensFor("ن" + "بَعدَهُم"))
+        checker.feedTokens(tokensFor(words[4]))
+        checker.finish()
+
+        // `.last`, not `.first` -- word 3 settles twice (the near-miss
+        // mismatch that opened the gate, then the retake), and it's the
+        // retake's own eventual status this test cares about.
+        let word3 = results.last { $0.globalWordIndex == 3 }
+        XCTAssertEqual(word3?.status, .match, "the legitimate bleed must still be strippable on a re-pinned retake: \(results)")
+        XCTAssertEqual(word3?.actualPhonemes, "بَعدَهُم")
     }
 
     /// A genuine backtrack must still be honored while halted -- confirmed

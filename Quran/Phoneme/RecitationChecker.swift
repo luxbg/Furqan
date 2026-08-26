@@ -13,11 +13,13 @@ final class RecitationChecker {
     private let onWordResult: (PhonemeWordCheckResult) -> Void
     private let onStatus: (String) -> Void
     /// Fired whenever a genuine relocalization happens (initial localize,
-    /// `rerouteIfBacktrack`, `beginRelocalize`'s eventual re-match, the
-    /// ambient backtrack below, or the strict-mode regate probe) -- never
-    /// for ordinary forward word-by-word settling. `RecitationSession` uses
-    /// this to release a stuck strict-mode gate when the reciter has
-    /// genuinely moved backward of it (see `onLocalized`).
+    /// `rerouteIfBacktrack`, `beginRelocalize`'s eventual re-match, or the
+    /// ambient backtrack below) -- never for ordinary forward word-by-word
+    /// settling, and never for strict mode's own `pinToGate` (a "still
+    /// stuck" re-pin onto the same word, not a real jump -- see its own
+    /// doc). `RecitationSession` uses this to release a stuck strict-mode
+    /// gate when the reciter has genuinely moved backward of it (see
+    /// `onLocalized`).
     private let onRelocalized: (Int) -> Void
 
     let locator: IncrementalAyahLocator
@@ -39,10 +41,10 @@ final class RecitationChecker {
     private(set) var maxGlobalWordIdxReached: Int?
     private let backtrackWindowWords: Int
     private var flushing = false
-    /// Set by `onLocalized` (any source: reroute, regate probe, ambient
-    /// backtrack, or EMA-collapse relocalize) and checked/reset around each
-    /// `feedTokens` call -- a reroute/regate can fire *synchronously* mid-way
-    /// through `aligner.feedTokens(tokens)` (via `onWordSettled`'s own
+    /// Set by `onLocalized` (any source: reroute, ambient backtrack, or
+    /// EMA-collapse relocalize) and checked/reset around each `feedTokens`
+    /// call -- a reroute can fire *synchronously* mid-way through
+    /// `aligner.feedTokens(tokens)` (via `onWordSettled`'s own
     /// callback chain), so by the time control returns to `feedTokens`,
     /// `recentText` still reflects the same already-consumed/relocalized
     /// content. Without this guard, `considerAmbientBacktrack` (which reads
@@ -51,11 +53,82 @@ final class RecitationChecker {
     /// top of the one that already just happened.
     private var relocalizedDuringCurrentCall = false
     /// Accumulates actualPhonemes from consecutive mismatches only, for the
-    /// backtrack-vs-mistake check -- see `rerouteIfBacktrack`.
+    /// backtrack-vs-mistake check -- see `rerouteIfBacktrack`. Bounded to
+    /// `suspectBufferCap` (see `appendSuspect`) -- unbounded, this can grow
+    /// far past "the last word or short phrase" `backtrackMinWordGap`'s own
+    /// doc says this path is meant for. Confirmed live: with a strict-mode
+    /// pin holding, every one of the reciter's subsequent words -- all
+    /// genuinely correct, just repeatedly re-attributed to the pinned word
+    /// -- keeps appending here every cycle, so an unresolved pin can
+    /// accumulate a whole ayah's worth of real (but non-contiguous, since
+    /// the pinned word's own botched attempt is mixed in) Quran text. A
+    /// blob that long and that textually real is no longer "recent
+    /// unexplained audio" -- it can fuzzy-match a coincidentally similar
+    /// passage the reciter never actually went anywhere near, well before
+    /// the pinned word. The cap alone doesn't rule that out; see
+    /// `rerouteIfBacktrack`'s own candidate-vs-pin check and
+    /// `pinnedBacktrackConfidenceThreshold` for the guards that actually
+    /// do.
     private var suspectBuffer = ""
+    private static let suspectBufferCap = 40
+    private func appendSuspect(_ text: String) {
+        let combined = (suspectBuffer + text).phonemeScalars
+        suspectBuffer = combined.suffix(Self.suspectBufferCap).scalarString
+    }
     /// Set to `maxGlobalWordIdxReached` (as it stood just *before* the jump)
     /// for the duration of `onLocalized`'s replay -- see `onWordSettled`.
     private var replayFloor: Int?
+    /// True for the duration of `onLocalized`'s own `aligner.feedText`
+    /// replay -- guards `rerouteIfBacktrack` the same way `flushing` already
+    /// guards it (see that check's own doc): triggering a *second*,
+    /// synchronous relocalization from inside the first one's still-in-
+    /// progress replay resets the aligner state that replay is actively
+    /// using, mid-loop. Confirmed live and reproducible: the session's very
+    /// first localize can buffer (and then replay) a long run of text
+    /// before the locator becomes confident -- `replayFloor` is `nil` for
+    /// this specific replay (nothing was "already reached" before the
+    /// session's own first word), so a DP chunking artifact producing one
+    /// spurious mismatch on otherwise-perfectly-correct replayed text isn't
+    /// suppressed the way it would be for a later jump's replay. With
+    /// strict mode on, that spurious mismatch opened a pin, and
+    /// `suspectBuffer` (built from that same replay's own real, correct
+    /// text) trivially self-matched elsewhere *within the very block still
+    /// being replayed*, at perfect confidence -- no threshold tuning
+    /// prevents an exact match -- cascading into repeated nested
+    /// relocalizations before the original replay had even finished.
+    private var replaying = false
+
+    /// Strict mode's halt target: the word recognition is currently pinned
+    /// on, or nil if nothing's gated. Set once, the first time a word goes
+    /// gate-worthy, and held fixed from then on -- `pinToGate` always
+    /// re-targets *this* word, never whatever word most recently failed to
+    /// settle. Without that distinction, a later word corrupted by the
+    /// original mismatch's own knock-on effects (confirmed live: a
+    /// mis-segmented DP boundary right after a pin can leave a *different*
+    /// word settling badly next) would silently become the new pin target,
+    /// letting recognition drift forward exactly the way strict mode exists
+    /// to prevent. Cleared by a genuine match at this same word (passed) or
+    /// by any relocalization (`onLocalized` -- a real backtrack moved
+    /// somewhere else, so this word's own gate no longer applies).
+    private var pinnedGateGlobalWordIdx: Int?
+    /// Snapshot of `aligner.currentBleedContext` taken the moment this pin
+    /// first opened (before that first mismatch's own settle could
+    /// overwrite it with garbage) -- describes the word genuinely preceding
+    /// the pinned one, which doesn't change for as long as the same word
+    /// stays pinned. Passed to every `pinToGate` re-localize so cross-word
+    /// bleed-stripping (`stripLiaisonBleed`/`stripConnectedTailBleed`)
+    /// keeps working on repeated pin cycles instead of going permanently
+    /// blind the moment the pin's own first `localize()` would otherwise
+    /// wipe it -- see `pinToGate`'s own doc.
+    private var pinBleedContext: IncrementalWordAligner.BleedContext?
+    /// The aligner's own bleed context as of the most recent genuine
+    /// `.match` -- kept up to date on every match so it's always ready the
+    /// moment a gate opens (by the time `onWordSettled` sees a mismatch,
+    /// `finalizeSettledWord` has already overwritten the aligner's own
+    /// `lastSettledActual`/etc with *that mismatch's own* content, too late
+    /// to read the true preceding word from there -- this is captured
+    /// proactively instead, one match ahead).
+    private var lastCleanBleedContext: IncrementalWordAligner.BleedContext?
 
     private struct AmbientBacktrackState {
         let committedGlobalWordIdx: Int
@@ -115,9 +188,9 @@ final class RecitationChecker {
             relocalizedDuringCurrentCall = false
             aligner.feedTokens(tokens)
             if relocalizedDuringCurrentCall {
-                // Already handled synchronously (reroute/regate) during the
-                // call above -- re-running ambient/EMA checks against the
-                // same now-stale recentText would double-relocalize.
+                // Already handled synchronously (reroute) during the call
+                // above -- re-running ambient/EMA checks against the same
+                // now-stale recentText would double-relocalize.
                 return
             }
             if aligner.confidenceCollapsed() {
@@ -185,38 +258,88 @@ final class RecitationChecker {
         // mispronounced this one. Never while flush() is running: calling
         // locator/aligner localize() here would reset aligner state out
         // from under flush()'s own in-progress loop.
+        //
+        // Kept unconditional (accumulates every cycle, even while a pin is
+        // already holding) -- capped in length by `appendSuspect`, and
+        // `rerouteIfBacktrack` below only ever accepts a candidate strictly
+        // before the pin, at a much stricter confidence bar while pinned
+        // (see `pinnedBacktrackConfidenceThreshold`'s own doc). That's what
+        // lets an unresolved pin's own accumulating evidence still recover
+        // a word whose correct retake got DP-merged with noise right in
+        // front of it (the merged blob's own best explanation turns out to
+        // be a position just *before* the pin, and replaying it with full
+        // context there correctly re-segments the noise from the retake) --
+        // freezing this after the first cycle was tried and confirmed to
+        // break exactly that recovery, since the retake's own evidence
+        // never gets a second chance once merged.
         if result.status == .match {
             suspectBuffer = ""
+            // Captured proactively, one match ahead -- see the property's
+            // own doc for why this can't just be read off the aligner
+            // reactively once a mismatch/gate shows up.
+            lastCleanBleedContext = aligner.currentBleedContext
         } else if result.status == .mismatch, let actual = result.actualPhonemes {
-            suspectBuffer += actual
+            appendSuspect(actual)
         }
 
-        let gateWorthy = !flushing && settings.strictMode && isStrictGateWorthy(result)
-        if gateWorthy, result.status == .mismatch {
-            // `pinToGate` below is about to wipe the aligner's own
-            // in-flight buffer with no replay (see its own doc for why) --
-            // rescue it into `suspectBuffer` first, the same accumulator
-            // `rerouteIfBacktrack` searches with, so pinning back onto the
-            // same word doesn't cost evidence that would otherwise have
-            // kept accumulating as the aligner drifted forward on its own
-            // (which is how `rerouteIfBacktrack` found a genuine backtrack
-            // before pinning existed). Deliberately scoped to `.mismatch`
-            // only, not every gate-worthy result -- widening this to a
-            // `.deleted` live-skip's own (unattributed, noisier) leftover
-            // was confirmed live to trigger false-positive backtracks
-            // during otherwise-ordinary forward recitation (two ayahs
-            // sharing an identical opening phrase).
-            suspectBuffer += aligner.actualBufferText
+        // `!replaying` too -- a gate opened here would target a position
+        // the replay's own natural forward continuation (still unblocked;
+        // only the reentrant `localize()` calls below are suppressed while
+        // replaying, not ordinary DP settling) is about to carry straight
+        // past within this same replay anyway, since there's no live audio
+        // stream actually paused waiting for a correction to reconstructed,
+        // already-known historical audio. Confirmed live: holding the pin
+        // open past the replay and re-establishing it afterward instead
+        // just rewound the aligner back onto an already-superseded position,
+        // discarding real forward progress the same replay had already
+        // made and correctly reported.
+        let gateWorthy = !flushing && !replaying && settings.strictMode && isStrictGateWorthy(result)
+        if gateWorthy {
+            if pinnedGateGlobalWordIdx == nil {
+                pinnedGateGlobalWordIdx = result.globalWordIndex
+                // The word genuinely preceding the one just gated -- see
+                // `pinBleedContext`'s own doc.
+                pinBleedContext = lastCleanBleedContext
+            }
+            if result.status == .mismatch {
+                // `pinToGate` below is about to wipe the aligner's own
+                // in-flight buffer with no replay (see its own doc for why)
+                // -- rescue it into `suspectBuffer` first, the same
+                // accumulator `rerouteIfBacktrack` searches with, so
+                // pinning back onto the same word doesn't cost evidence
+                // that would otherwise have kept accumulating as the
+                // aligner drifted forward on its own (which is how
+                // `rerouteIfBacktrack` found a genuine backtrack before
+                // pinning existed). Deliberately scoped to `.mismatch`
+                // only, not every gate-worthy result -- widening this to a
+                // `.deleted` live-skip's own (unattributed, noisier)
+                // leftover was confirmed live to trigger false-positive
+                // backtracks during otherwise-ordinary forward recitation
+                // (two ayahs sharing an identical opening phrase).
+                appendSuspect(aligner.actualBufferText)
+            }
+        } else if settings.strictMode, result.status == .match, result.globalWordIndex == pinnedGateGlobalWordIdx {
+            // The pinned word finally passed -- release the pin so the
+            // *next* mismatch (if any) opens a fresh gate at wherever it
+            // actually happens, instead of this now-stale position.
+            pinnedGateGlobalWordIdx = nil
+            pinBleedContext = nil
         }
 
-        if !flushing, result.status == .mismatch, rerouteIfBacktrack(result) {
+        if !flushing, !replaying, result.status == .mismatch, rerouteIfBacktrack(result) {
             return
         }
 
         onWordResult(result)
 
-        if gateWorthy {
-            pinToGate(result.globalWordIndex)
+        // Suppressed while replaying for the same reason as the reroute
+        // check above -- `pinToGate` resets the aligner too, which would
+        // corrupt `onLocalized`'s own still-in-progress `feedText` loop.
+        // `onLocalized` re-establishes the pin itself right after its
+        // replay finishes (see its own doc), so this only ever skips a
+        // cycle, never drops the halt entirely.
+        if gateWorthy, !replaying, let gate = pinnedGateGlobalWordIdx {
+            pinToGate(gate)
         }
     }
 
@@ -277,8 +400,17 @@ final class RecitationChecker {
     ///    ordinary (non-strict) operation. `rerouteIfBacktrack`'s own
     ///    evidence-gated search (point above) is deliberately the only
     ///    backtrack path strict mode leans on while pinned.
+    ///
+    /// `preservingBleedContext: pinBleedContext` -- without it, every
+    /// re-pin would wipe the cross-word bleed-stripping context (see
+    /// `IncrementalWordAligner.localize`'s own doc), permanently disabling
+    /// recovery for a word whose correct pronunciation genuinely depends on
+    /// a lagging tajweed artifact from the word before it (confirmed live:
+    /// a reciter saying the pinned word perfectly correctly still couldn't
+    /// pass, since the aligner could no longer explain away that legitimate
+    /// leading bleed -- indistinguishable from being stuck).
     private func pinToGate(_ globalWordIdx: Int) {
-        aligner.localize(globalWordIdx)
+        aligner.localize(globalWordIdx, preservingBleedContext: pinBleedContext)
     }
 
     /// Runs continuously (every `feedTokens` call, no prior mismatch
@@ -377,18 +509,40 @@ final class RecitationChecker {
         let query = suspectBuffer
         guard query.phonemeScalars.count >= settings.minTriggerChars else { return false }
 
+        // Stricter thresholds while pinned -- see their own doc in
+        // `PhonemeSettings` for why the base thresholds aren't safe here.
+        let pinned = pinnedGateGlobalWordIdx != nil
         guard let candidate = phonemeSearchWindow(
             corpus: corpus,
             query: query,
             settings: settings,
             minGlobalWordIdx: locator.minGlobalWordIdx,
-            maxGlobalWordIdx: maxGlobalWordIdxReached
+            maxGlobalWordIdx: maxGlobalWordIdxReached,
+            confidenceThreshold: pinned ? settings.pinnedBacktrackConfidenceThreshold : nil,
+            marginThreshold: pinned ? settings.pinnedBacktrackMarginThreshold : nil
         ) else { return false }
 
         // Only a jump to somewhere clearly different counts as a backtrack
         // -- a match right around where we already are is just an ordinary
         // mismatch/ASR noise, not proof the reciter went elsewhere.
         guard abs(candidate.globalWordIdx - result.globalWordIndex) >= settings.backtrackMinWordGap else { return false }
+
+        // While a strict-mode pin is holding, `suspectBuffer` is built from
+        // the pinned word's own repeated leftover (see the rescue in
+        // `onWordSettled`) -- text that necessarily starts with that same
+        // word's audio, so a fuzzy search over it can trivially "find" the
+        // pinned word itself (or drift past it) with `backtrackMinWordGap`
+        // set to 0 doing nothing to stop it. Confirmed live: a mismatched
+        // word's own garbled buffer re-matched onto itself, which released
+        // the gate and replayed straight through it -- the reciter's very
+        // next, genuinely correct retake of that word then landed on
+        // whatever came after it instead, since the gate was already gone.
+        // A real backtrack means "the reciter jumped to an earlier point,"
+        // so only a candidate strictly before the pin counts; anything at
+        // or past it must stay gated.
+        if let pin = pinnedGateGlobalWordIdx, candidate.globalWordIdx >= pin {
+            return false
+        }
 
         // Any characters already fed to the old (wrong-position) aligner
         // but not yet attributed to a settled word would otherwise be lost
@@ -402,6 +556,15 @@ final class RecitationChecker {
 
     private func onLocalized(globalWordIdx: Int, matchedText: String) {
         relocalizedDuringCurrentCall = true
+        // Any genuine relocalization (reroute, ambient, EMA-collapse, or
+        // the session's very first localize) moves recognition somewhere
+        // else entirely -- a strict-mode gate pinned on the old position no
+        // longer applies there. `pinToGate` deliberately does NOT call this
+        // method (see its own doc), so this never fires for an ordinary
+        // "still stuck, re-pin the same word" cycle -- only for an actual
+        // jump.
+        pinnedGateGlobalWordIdx = nil
+        pinBleedContext = nil
         let entry = corpus.wordAt(globalWordIdx)
         let previouslyReached = maxGlobalWordIdxReached
 
@@ -419,7 +582,9 @@ final class RecitationChecker {
             // above, which this jump may have already raised) -- see
             // `onWordSettled`'s use of `replayFloor`.
             replayFloor = previouslyReached
+            replaying = true
             aligner.feedText(matchedText)
+            replaying = false
             replayFloor = nil
         }
         if let entry {

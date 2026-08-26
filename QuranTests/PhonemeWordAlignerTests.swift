@@ -357,6 +357,43 @@ final class PhonemeWordAlignerTests: XCTestCase {
         XCTAssertEqual(byIdx[2]?.status, .mismatch, "a real hamza is never elided -- dropping it is a genuine mistake")
     }
 
+    /// Real live-session regression (37:9 -> 37:10, "عَذَابٌ وَاصِبٌ" ->
+    /// "إِلَّا مَنْ"): unlike the fatha-tanween case above (where the
+    /// connected form's own extra tail is just the bare nasal "ن"), a
+    /// damma/kasra tanween's connected form adds a short vowel *and* the
+    /// nasal -- "ُن" here -- while the paused form the word actually
+    /// settles against drops both entirely (sukoon, not an elongation).
+    /// The ASR then only recognized the nasal itself, never the vowel
+    /// ahead of it, so the bled prefix landing on the next word is just
+    /// "ن", a strict suffix of the full 2-character bleed rather than the
+    /// whole thing -- must still be recovered, not left to read as a
+    /// phantom leading "ن" on the next word.
+    func testPartiallyRecognizedTanweenBleedIntoNextWordIsStripped() {
+        let words = ["بسم", "الله", "قَلِۦۦلَ", "بَعدَهُم"]
+        let continued: [String?] = [nil, nil, "قَلِۦۦلَُن", nil]
+        let corpus = makeCorpus(words: words, continued: continued)
+        var results: [PhonemeWordCheckResult] = []
+        let settings = PhonemeSettings.default
+        let aligner = IncrementalWordAligner(corpus: corpus, settings: settings, onWordResult: { results.append($0) })
+        aligner.localize(0)
+
+        // قليلا recited paused, matching its own (short) default form
+        // exactly -- the connected form's own extra "ُن" tail was never
+        // heard as part of it.
+        aligner.feedTokens(tokensFor([words[0], words[1], words[2]].joined()))
+
+        // Only the bare nasal "ن" bleeds through, immediately in front of
+        // the next word's own audio -- never the vowel ahead of it.
+        aligner.feedTokens(tokensFor("ن" + words[3]))
+        aligner.flush()
+
+        let byIdx = Dictionary(uniqueKeysWithValues: results.map { ($0.wordIndex, $0) })
+        XCTAssertEqual(byIdx[2]?.status, .match, "قليلا's own missing tanween tail must be forgiven against its paused form")
+        XCTAssertEqual(byIdx[2]?.actualPhonemes, "قَلِۦۦلَ")
+        XCTAssertEqual(byIdx[3]?.status, .match, "the partially-recognized bled noon must still be stripped, not read as the next word's own leading sound")
+        XCTAssertEqual(byIdx[3]?.actualPhonemes, "بَعدَهُم")
+    }
+
     /// Real live-session regression (11:57, "تَضُرُّونَهُۥ شَيْـًٔا"): word2
     /// ends in a droppable doubled madd ("ۥۥ") and settles early via
     /// `trySettleDroppableTrailing`, before its own real trailing "ۥۥ"

@@ -104,6 +104,20 @@ final class IncrementalWordAligner {
     /// across a backtrack reroute -- mirrors `qrc`'s `aligner.actual_buffer`.
     var actualBufferText: String { actualBuffer.scalarString }
 
+    /// The bleed-stripping context describing whatever word settled right
+    /// before whatever's pending now -- see `lastSettledActual`/
+    /// `lastSettledIsolated`/`lastSettledConnectedBleed`'s own docs.
+    /// Exposed so `RecitationChecker.pinToGate` can preserve it across a
+    /// strict-mode re-pin -- see `localize(_:preservingBleedContext:)`.
+    struct BleedContext {
+        let actual: [Unicode.Scalar]?
+        let isolated: [Unicode.Scalar]?
+        let connectedBleed: [Unicode.Scalar]?
+    }
+    var currentBleedContext: BleedContext {
+        BleedContext(actual: lastSettledActual, isolated: lastSettledIsolated, connectedBleed: lastSettledConnectedBleed)
+    }
+
     init(corpus: PhonemeCorpus, settings: PhonemeSettings, onWordResult: @escaping (PhonemeWordCheckResult) -> Void) {
         self.corpus = corpus
         self.settings = settings
@@ -117,15 +131,30 @@ final class IncrementalWordAligner {
         onWordResult = callback
     }
 
-    func localize(_ globalWordIdx: Int) {
+    /// `preservingBleedContext`: normally a fresh localize means a genuine
+    /// jump to a new position, where whatever word used to precede the
+    /// current one no longer does -- discarding the bleed context is
+    /// correct there. Strict mode's own re-pin (`RecitationChecker.pinToGate`)
+    /// is different: it keeps re-targeting the *same* still-mismatching
+    /// word, so the word genuinely preceding it hasn't changed at all.
+    /// Confirmed live: without this, a legitimate cross-word tajweed bleed
+    /// (a trailing elongation/liaison lagging from the previous word into
+    /// this one, e.g. "هُۥۥۥۥوَعدَ" instead of "وَعدَ") could never be
+    /// stripped on a re-pin cycle, even once the reciter said the pinned
+    /// word perfectly correctly -- `lastSettledIsolated`/
+    /// `lastSettledConnectedBleed` (what `stripLiaisonBleed`/
+    /// `stripConnectedTailBleed` need) get wiped to nil on every single
+    /// `localize()`, permanently disabling those heuristics for as long as
+    /// the pin holds, and looking indistinguishable from being stuck.
+    func localize(_ globalWordIdx: Int, preservingBleedContext context: BleedContext? = nil) {
         nextGlobalWordIdx = globalWordIdx
         actualBuffer = []
         pendingWords = []
         expectedBuffer = []
         rollingSimilarityEma = 1.0
-        lastSettledActual = nil
-        lastSettledIsolated = nil
-        lastSettledConnectedBleed = nil
+        lastSettledActual = context?.actual
+        lastSettledIsolated = context?.isolated
+        lastSettledConnectedBleed = context?.connectedBleed
         refillExpected()
     }
 
@@ -196,17 +225,37 @@ final class IncrementalWordAligner {
     /// waiting to see whether more of a tajweed-length run (gemination,
     /// elongation) was still coming -- if so, that whole run ends up
     /// unclaimed and bleeds forward too, not just one instance of it.
+    ///
+    /// Tries the *whole* bleed first, then progressively shorter trailing
+    /// suffixes of it down to just its last character. A multi-character
+    /// bleed (a tanween's short vowel plus its nasal `ن`, e.g. "ُن") isn't
+    /// always recognized in full -- confirmed live: the ASR emitted only
+    /// the trailing `ن` of a damma-tanween's "ُن" tail, dropping the vowel
+    /// entirely, and the old exact-whole-bleed search never found it since
+    /// "ن" alone never appears as a substring equal to the 2-character
+    /// bleed. The dropped leading vowel is coarticulated and easily
+    /// swallowed; the trailing nasal consonant is the acoustically salient
+    /// part and the one most likely to survive alone -- so a shorter
+    /// suffix is checked only once the full bleed fails, same trust level
+    /// `stripLiaisonBleed` already gives a 1-character overlap of a known,
+    /// specific (not arbitrary) previous-word artifact.
     private func stripConnectedTailBleed(_ actual: [Unicode.Scalar]) -> [Unicode.Scalar] {
-        guard let bleed = lastSettledConnectedBleed, !bleed.isEmpty, actual.count >= bleed.count else { return actual }
-        let maxStart = min(actual.count - bleed.count, connectedBleedSearchSlack)
-        guard maxStart >= 0 else { return actual }
-        for start in 0...maxStart where actual[start..<start + bleed.count].elementsEqual(bleed) {
-            var result = actual
-            var end = start + bleed.count
-            let repeatChar = bleed[bleed.count - 1]
-            while end < result.count, result[end] == repeatChar { end += 1 }
-            result.removeSubrange(start..<end)
-            return result
+        guard let bleed = lastSettledConnectedBleed, !bleed.isEmpty else { return actual }
+        var length = bleed.count
+        while length >= 1 {
+            let sub = Array(bleed.suffix(length))
+            defer { length -= 1 }
+            guard actual.count >= sub.count else { continue }
+            let maxStart = min(actual.count - sub.count, connectedBleedSearchSlack)
+            guard maxStart >= 0 else { continue }
+            for start in 0...maxStart where actual[start..<start + sub.count].elementsEqual(sub) {
+                var result = actual
+                var end = start + sub.count
+                let repeatChar = sub[sub.count - 1]
+                while end < result.count, result[end] == repeatChar { end += 1 }
+                result.removeSubrange(start..<end)
+                return result
+            }
         }
         return actual
     }

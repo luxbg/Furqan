@@ -59,7 +59,9 @@ func phonemeSearchWindow(
     query: String,
     settings: PhonemeSettings,
     minGlobalWordIdx: Int,
-    maxGlobalWordIdx: Int?
+    maxGlobalWordIdx: Int?,
+    confidenceThreshold: Double? = nil,
+    marginThreshold: Double? = nil
 ) -> PhonemeLocalizeResult? {
     let queryScalars = query.phonemeScalars
     let scored = scoreCandidates(corpus: corpus, query: queryScalars, settings: settings)
@@ -67,7 +69,11 @@ func phonemeSearchWindow(
         let idx = corpus.globalWordIdx(forCharOffset: c.charOffset)
         return idx >= minGlobalWordIdx && (maxGlobalWordIdx == nil || idx <= maxGlobalWordIdx!)
     }
-    guard passesConfidenceGate(inRange, confidenceThreshold: settings.confidenceThreshold, marginThreshold: settings.marginThreshold) else { return nil }
+    guard passesConfidenceGate(
+        inRange,
+        confidenceThreshold: confidenceThreshold ?? settings.confidenceThreshold,
+        marginThreshold: marginThreshold ?? settings.marginThreshold
+    ) else { return nil }
     let globalWordIdx = corpus.globalWordIdx(forCharOffset: inRange[0].charOffset)
     return PhonemeLocalizeResult(globalWordIdx: globalWordIdx, similarity: inRange[0].similarity, matchedText: query)
 }
